@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Gaze
+GenericName=Text Editor
+Comment=A tiny, fast text editor
+Exec=gaze %F
+Icon=accessories-text-editor
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/plain;
+Keywords=text;editor;plain;code;
+StartupNotify=true
