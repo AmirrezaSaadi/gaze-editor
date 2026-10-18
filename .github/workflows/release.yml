@@ -5,12 +5,17 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to build and publish (for example v1.2.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 env:
-  VERSION: ${{ github.ref_name }}
+  VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
   build:
@@ -65,12 +70,19 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Fyne needs OpenGL + X11 headers to build with cgo on Linux.
+      # Fyne needs OpenGL, X11 and Wayland headers to build with cgo on Linux:
+      # go-gl/glfw >= 3.4 compiles its Wayland backend by default (wl_platform.h).
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev
+          sudo apt-get install -y \
+            gcc \
+            libgl1-mesa-dev \
+            xorg-dev \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev
 
       - name: Build
         shell: bash
