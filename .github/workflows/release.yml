@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ github.ref_name }}
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary: gaze
+            archive: tar.gz
+            ldflags: -s -w -buildid=
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            binary: gaze
+            archive: tar.gz
+            ldflags: -s -w -buildid=
+          - name: windows-amd64
+            os: windows-latest
+            goos: windows
+            goarch: amd64
+            binary: gaze.exe
+            archive: zip
+            # -H windowsgui hides the console window that would otherwise pop up.
+            ldflags: -s -w -H windowsgui -buildid=
+          - name: darwin-amd64
+            os: macos-latest
+            goos: darwin
+            goarch: amd64
+            binary: gaze
+            archive: tar.gz
+            ldflags: -s -w -buildid=
+          - name: darwin-arm64
+            os: macos-latest
+            goos: darwin
+            goarch: arm64
+            binary: gaze
+            archive: tar.gz
+            ldflags: -s -w -buildid=
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Fyne needs OpenGL + X11 headers to build with cgo on Linux.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev
+
+      - name: Build
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+        run: |
+          mkdir -p dist pkg
+          go build -trimpath -tags no_emoji,no_animations \
+            -ldflags "${{ matrix.ldflags }}" \
+            -o "dist/${{ matrix.binary }}" ./cmd/gaze
+          ls -lh "dist/${{ matrix.binary }}"
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          cp "dist/${{ matrix.binary }}" pkg/
+          if [ "${{ matrix.goos }}" = "linux" ]; then
+            cp packaging/gaze.desktop pkg/
+          fi
+          ( cd pkg && tar -czf "../dist/gaze-${VERSION}-${{ matrix.name }}.tar.gz" * )
+          ls -lh dist/
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Copy-Item "dist/${{ matrix.binary }}" pkg/
+          Compress-Archive -Path "pkg/*" -DestinationPath "dist/gaze-$env:VERSION-${{ matrix.name }}.zip"
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gaze-${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -lh artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: Gaze ${{ env.VERSION }}
+          files: artifacts/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          body: |
+            A tiny, fast, keyboard-first text editor for the desktop, written in Go with [Fyne](https://fyne.io).
+
+            ### Downloads
+
+            | Platform | Asset |
+            | --- | --- |
+            | Linux x86-64 | `gaze-*-linux-amd64.tar.gz` |
+            | Linux arm64 | `gaze-*-linux-arm64.tar.gz` |
+            | Windows x86-64 | `gaze-*-windows-amd64.zip` |
+            | macOS Apple Silicon | `gaze-*-darwin-arm64.tar.gz` |
+            | macOS Intel | `gaze-*-darwin-amd64.tar.gz` |
+
+            ### Install
+
+            **Linux / macOS** — unpack and run:
+
+            ```sh
+            tar -xzf gaze-*.tar.gz
+            ./gaze path/to/file.txt
+            ```
+
+            The Linux archive also contains `gaze.desktop`; drop it in `~/.local/share/applications/`
+            and put the `gaze` binary on your `PATH` to get it in your application menu.
+
+            **Windows** — unzip and run `gaze.exe`.
+
+            ### Notes
+
+            - Builds are unsigned. On macOS, Gatekeeper may block the first launch:
+              `xattr -dr com.apple.quarantine ./gaze`
+            - Linux builds link against OpenGL and X11, as Fyne requires.
+            - You can also build it yourself: `make build`, or `make install`.
