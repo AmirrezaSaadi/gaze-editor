@@ -120,3 +120,7 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
   history for that operation.
 - Selection is unexported, so commands act on the caret's line rather than a
   selection.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
