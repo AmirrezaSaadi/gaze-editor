@@ -82,7 +82,9 @@ func main() {
 		initial = sb.String()
 	}
 
-	a := app.NewWithID("com.gaze.editor")
+	// Reverse-DNS app ID. Fyne derives the settings directory from it
+	// (see fyne's storageRoot), so changing it moves the user's preferences.
+	a := app.NewWithID("io.github.amirrezasaadi.gaze-editor")
 	w := a.NewWindow("Gaze")
 
 	ed := editor.New(a, w)
