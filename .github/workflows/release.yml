@@ -104,6 +104,7 @@ jobs:
           cp "dist/${{ matrix.binary }}" pkg/
           if [ "${{ matrix.goos }}" = "linux" ]; then
             cp packaging/gaze.desktop pkg/
+            cp Icon.png pkg/
           fi
           ( cd pkg && tar -czf "../dist/gaze-${VERSION}-${{ matrix.name }}.tar.gz" * )
           ls -lh dist/
@@ -167,8 +168,13 @@ jobs:
             ./gaze path/to/file.txt
             ```
 
-            The Linux archive also contains `gaze.desktop`; drop it in `~/.local/share/applications/`
-            and put the `gaze` binary on your `PATH` to get it in your application menu.
+            The Linux archive also contains `gaze.desktop` and `Icon.png`. Put the `gaze` binary
+            on your `PATH`, then install the launcher and icon so it shows up in your application menu:
+
+            ```sh
+            install -Dm644 gaze.desktop ~/.local/share/applications/gaze.desktop
+            install -Dm644 Icon.png ~/.local/share/icons/hicolor/512x512/apps/gaze.png
+            ```
 
             **Windows** — unzip and run `gaze.exe`.
 

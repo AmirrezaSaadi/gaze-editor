@@ -1,0 +1,73 @@
+<svg id="gaze-icon" viewBox="0 0 512 512" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                            <!-- Dark Black/Purple Background Gradient Options -->
+                            <linearGradient id="bg-grad-dark" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="#18072e"/>
+                                <stop offset="55%" stop-color="#0a0214"/>
+                                <stop offset="100%" stop-color="#030008"/>
+                            </linearGradient>
+
+                            <!-- Subtle Outer Border Accent -->
+                            <linearGradient id="border-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" stop-color="#a855f7" stop-opacity="0.5"/>
+                                <stop offset="100%" stop-color="#3b0764" stop-opacity="0.1"/>
+                            </linearGradient>
+
+                            <!-- Soft Background Core Aura -->
+                            <radialGradient id="star-aura" cx="50%" cy="45%" r="55%">
+                                <stop offset="0%" stop-color="#a855f7" stop-opacity="0.35"/>
+                                <stop offset="50%" stop-color="#581c87" stop-opacity="0.1"/>
+                                <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+                            </radialGradient>
+
+                            <!-- Neon Glow Blur Filter -->
+                            <filter id="neon-glow" x="-50%" y="-50%" width="200%" height="200%">
+                                <feGaussianBlur id="blur-wide" stdDeviation="13.799999999999999" result="blur1"/>
+                                <feGaussianBlur id="blur-mid" stdDeviation="6.8999999999999995" result="blur2"/>
+                                <feGaussianBlur id="blur-core" stdDeviation="3" result="blur3"/>
+                                <feMerge>
+                                    <feMergeNode in="blur1"/>
+                                    <feMergeNode in="blur2"/>
+                                    <feMergeNode in="blur3"/>
+                                    <feMergeNode in="SourceGraphic"/>
+                                </feMerge>
+                            </filter>
+
+                            <!-- Star Gradient Shimmer -->
+                            <linearGradient id="star-fill-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="#ffffff"/>
+                                <stop offset="60%" stop-color="#f5f3ff"/>
+                                <stop offset="85%" stop-color="#e9d5ff"/>
+                                <stop offset="100%" stop-color="#d8b4fe"/>
+                            </linearGradient>
+                        </defs>
+
+                        <!-- Icon Background Base -->
+                        <rect id="icon-bg" width="512" height="512" rx="112" fill="url(#bg-grad-dark)"/>
+
+                        <!-- Outer Edge Highlight -->
+                        <rect x="2" y="2" width="508" height="508" rx="110" fill="none" stroke="url(#border-grad)" stroke-width="3"/>
+
+                        <!-- Soft Background Radial Aura -->
+                        <circle cx="256" cy="216" r="200" fill="url(#star-aura)"/>
+
+                        <!-- Subtle Editor Grid Marks -->
+                        <g opacity="0.06" stroke="#ffffff" stroke-width="1.5">
+                            <line x1="80" y1="216" x2="432" y2="216" stroke-dasharray="6 6"/>
+                            <line x1="256" y1="70" x2="256" y2="360" stroke-dasharray="6 6"/>
+                        </g>
+
+                        <!-- MAIN STAR ELEMENT (Smooth, Circular-ish 4-Pointed Star) -->
+                        <g transform="translate(0, -10)">
+                            <!-- Outer Neon Glow Layer -->
+                            <path id="star-glow-path" d="M 256 64 &#xA;                                     C 256 160, 160 216, 64 216 &#xA;                                     C 160 216, 256 272, 256 368 &#xA;                                     C 256 272, 352 216, 448 216 &#xA;                                     C 352 216, 256 160, 256 64 Z" fill="#ffffff" filter="url(#neon-glow)" opacity="0.9"/>
+
+                            <!-- Clean Inner Core Star (No Dot) -->
+                            <path d="M 256 64 &#xA;                                     C 256 160, 160 216, 64 216 &#xA;                                     C 160 216, 256 272, 256 368 &#xA;                                     C 256 272, 352 216, 448 216 &#xA;                                     C 352 216, 256 160, 256 64 Z" fill="url(#star-fill-grad)"/>
+                        </g>
+
+                        <!-- Typography: GAZE Only -->
+                        <text x="256" y="440" font-family="'Plus Jakarta Sans', system-ui, -apple-system, sans-serif" font-size="34" font-weight="800" letter-spacing="12" fill="#ffffff" text-anchor="middle" opacity="0.95" style="text-shadow: 0 0 16px rgba(168, 85, 247, 0.7);">
+                            GAZE
+                        </text>
+                    </svg>

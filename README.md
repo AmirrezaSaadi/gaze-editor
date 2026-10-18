@@ -80,7 +80,9 @@ Gaze/
     text.go               # rune/offset/text helpers, line ops, EOL + indent
     tooltip.go            # hover tooltips for toolbar/find-bar buttons
   internal/theme/theme.go # Light/Dark selection, font zoom, persistence
+  Icon.png                # app icon, rendered from packaging/icon.svg
   packaging/gaze.desktop  # freedesktop launcher for `make install`
+  packaging/icon.svg      # icon artwork; `make icon` re-renders Icon.png
 ```
 
 ## Run / build / install
