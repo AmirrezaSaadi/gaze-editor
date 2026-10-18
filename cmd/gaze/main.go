@@ -17,7 +17,7 @@ import (
 	"gaze/internal/editor"
 )
 
-const version = "1.2.0"
+const version = "1.2.1"
 
 func main() {
 	// Keep the resident set small: let the collector run eagerly rather than
