@@ -4,6 +4,12 @@ A small, keyboard-first text editor built with [Fyne](https://fyne.io).
 Monospaced editing surface, stock **Light** and **Dark** themes, and only the
 day-to-day features you actually reach for — no plugin system, no bloat.
 
+## Screenshots
+
+| Light theme | Dark theme |
+| :---: | :---: |
+| [![Gaze editing a file in the light theme](screenshots/light.png)](screenshots/light.png) | [![Gaze editing a file in the dark theme](screenshots/dark.png)](screenshots/dark.png) |
+
 ## Features
 
 - **File** — New, Open, Save, Save As, native dialogs, unsaved-changes guard
