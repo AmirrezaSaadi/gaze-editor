@@ -61,13 +61,20 @@ type Editor struct {
 	currentFile string
 	dirty       bool
 	loading     bool
+	restoring   bool
 	wrap        bool
 	trimOnSave  bool
 	autosaveOn  bool
 
 	eol           string
+	enc           string
 	indentUseTabs bool
 	indentWidth   int
+
+	undo      []snapshot
+	redo      []snapshot
+	undoBytes int
+	redoBytes int
 
 	histIndex int
 	histDraft string
@@ -91,6 +98,7 @@ func New(a fyne.App, w fyne.Window) *Editor {
 		autosaveOn:  a.Preferences().BoolWithFallback(prefAutosave, true),
 		indentWidth: 4,
 		eol:         eolLF,
+		enc:         encUTF8,
 		histIndex:   -1,
 	}
 	w.Resize(fyne.NewSize(
@@ -266,9 +274,10 @@ func (e *Editor) themeItem(name string) *fyne.MenuItem {
 // onChanged marks the buffer dirty, refreshes the chrome and snapshots a
 // recovery copy after user edits.
 func (e *Editor) onChanged() {
-	if e.loading {
+	if e.loading || e.restoring {
 		return
 	}
+	e.dropRedo()
 	e.dirty = true
 	e.updateStats()
 	e.updateTitle()
@@ -301,9 +310,18 @@ func (e *Editor) updateInfo() {
 	if e.info == nil || e.entry == nil {
 		return
 	}
-	e.info.SetText(fmt.Sprintf("%d:%d · %dw · %dc · %s · %s · %d%%",
+	e.info.SetText(fmt.Sprintf("%d:%d · %dw · %dc · %s · %s%s · %d%%",
 		e.entry.CursorRow+1, e.entry.CursorColumn+1, e.statWords, e.statChars,
-		e.eolLabel(), e.indentLabel(), zoomPercent(e.themes.Zoom())))
+		e.eolLabel(), e.indentLabel(), e.encodingSuffix(), zoomPercent(e.themes.Zoom())))
+}
+
+// encodingSuffix names the file's encoding in the status bar, but only when it
+// is not plain UTF-8, so the readout stays short for the common case.
+func (e *Editor) encodingSuffix() string {
+	if e.enc == "" || e.enc == encUTF8 {
+		return ""
+	}
+	return " · " + e.enc
 }
 
 // eolLabel names the file's line-ending convention for the status bar.
@@ -343,11 +361,33 @@ func (e *Editor) refreshChrome() {
 	e.updateInfo()
 }
 
-// Undo reverts the last edit.
-func (e *Editor) Undo() { e.entry.Undo() }
+// Undo reverts the last edit. Entry's native stack handles typing; the
+// snapshots cover the whole-buffer rewrites that clear it.
+func (e *Editor) Undo() {
+	if e.entry == nil {
+		return
+	}
+	before := e.entry.Text
+	e.entry.Undo()
+	if e.entry.Text != before {
+		return // Entry undid a keystroke (and fired OnChanged for us)
+	}
+	e.popUndo()
+}
 
-// Redo reapplies the last undone edit.
-func (e *Editor) Redo() { e.entry.Redo() }
+// Redo reapplies the last undone edit, preferring Entry's stack for the same
+// reason Undo does.
+func (e *Editor) Redo() {
+	if e.entry == nil {
+		return
+	}
+	before := e.entry.Text
+	e.entry.Redo()
+	if e.entry.Text != before {
+		return
+	}
+	e.popRedo()
+}
 
 // SelectAll selects the entire buffer.
 func (e *Editor) SelectAll() { e.entry.TypedShortcut(&fyne.ShortcutSelectAll{}) }
@@ -468,11 +508,13 @@ func (e *Editor) OutdentLine() {
 }
 
 // applyLineEdit installs a whole-buffer result, keeping the caret in place.
-// widget.Entry has no range-edit API, so line operations rewrite via SetText.
+// widget.Entry has no range-edit API, so line operations rewrite via SetText,
+// which clears Entry's own history — the snapshot is what makes them undoable.
 func (e *Editor) applyLineEdit(newText string, row, col int) {
 	if newText == e.entry.Text {
 		return
 	}
+	e.pushUndo()
 	e.entry.SetText(newText)
 	e.entry.CursorRow, e.entry.CursorColumn = row, col
 	e.entry.Refresh()
@@ -543,6 +585,7 @@ func (e *Editor) showAbout() {
 		"Gaze — a tiny, fast Fyne text editor.\n\n"+
 			"Find & replace (regex, history), go-to-line, line ops,\n"+
 			"word wrap, font zoom, recent files, autosave recovery.\n"+
+			"UTF-8, UTF-8 BOM and UTF-16 in and out.\n"+
 			"Light and Dark themes.\n\n"+
 			"usage: gaze [file[:line[:col]]]  ·  gaze -  reads stdin\n\n"+
 			"File · Edit · View · built with Fyne v2.",

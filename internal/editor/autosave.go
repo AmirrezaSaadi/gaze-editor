@@ -58,7 +58,7 @@ func (e *Editor) writeRecovery() {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return
 	}
-	_ = writeFileAtomic(p, e.entry.Text)
+	_ = writeFileAtomic(p, []byte(e.entry.Text))
 }
 
 // recoveryFor returns a stored snapshot for path when it exists and is not

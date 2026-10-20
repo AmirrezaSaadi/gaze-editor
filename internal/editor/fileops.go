@@ -1,7 +1,6 @@
 package editor
 
 import (
-	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -23,17 +22,29 @@ const (
 	maxRecent = 10
 )
 
-// SetContent loads text into the editor as the file at path ("" for untitled).
-// Line endings are normalised to \n (remembering the original convention) and
-// the dirty flag is cleared with the change callback suppressed while loading.
+// SetContent loads text into the editor as the file at path ("" for untitled),
+// assuming UTF-8. Line endings are normalised to \n (remembering the original
+// convention) and the dirty flag is cleared with the change callback suppressed
+// while loading.
 func (e *Editor) SetContent(text, path string) {
+	e.setContent(text, path, encUTF8)
+}
+
+// setContent is SetContent with the document's encoding made explicit, so that
+// a file opened as UTF-16 is written back as UTF-16 rather than converted.
+func (e *Editor) setContent(text, path, enc string) {
 	text, eol := normalizeEOL(text)
 	e.eol = eol
+	e.enc = enc
+	if e.enc == "" {
+		e.enc = encUTF8
+	}
 	e.indentUseTabs, e.indentWidth = detectIndent(text)
 
 	e.loading = true
 	e.entry.SetText(text)
 	e.loading = false
+	e.resetUndo()
 
 	e.entry.CursorRow, e.entry.CursorColumn = 0, 0
 	e.entry.Refresh()
@@ -80,12 +91,12 @@ func (e *Editor) OpenFile() {
 			}
 			defer r.Close()
 
-			data, err := readText(r)
+			text, enc, err := readDocument(r)
 			if err != nil {
 				dialog.ShowError(err, e.win)
 				return
 			}
-			e.loadContent(r.URI().Path(), data)
+			e.loadContent(r.URI().Path(), text, enc)
 		}, e.win)
 		d.Show()
 	})
@@ -106,13 +117,13 @@ func (e *Editor) OpenPath(path string) {
 	}
 	defer f.Close()
 
-	text, err := readText(f)
+	text, enc, err := readDocument(f)
 	if err != nil {
 		dialog.ShowError(err, e.win)
 		e.setStatus("open failed")
 		return
 	}
-	e.loadContent(path, text)
+	e.loadContent(path, text, enc)
 }
 
 // OpenPathAt loads path and, when line > 0, places the caret at line:col.
@@ -125,20 +136,20 @@ func (e *Editor) OpenPathAt(path string, line, col int) {
 
 // loadContent installs file text, offering a crash-recovery snapshot first when
 // one exists and is at least as new as the file on disk.
-func (e *Editor) loadContent(path, text string) {
+func (e *Editor) loadContent(path, text, enc string) {
 	if rec, ok := recoveryFor(path); ok {
 		name := filepath.Base(path)
 		dialog.ShowConfirm("Recover unsaved changes?",
 			"Gaze found unsaved changes for "+name+" from an earlier session.\nRestore them?",
 			func(restore bool) {
 				if restore {
-					e.SetContent(rec, path)
+					e.setContent(rec, path, enc)
 					e.dirty = true
 					e.refreshChrome()
 					e.setStatus("recovered " + path)
 				} else {
 					clearRecovery(path)
-					e.SetContent(text, path)
+					e.setContent(text, path, enc)
 					e.setStatus("opened " + path)
 				}
 				e.addRecent(path)
@@ -146,19 +157,9 @@ func (e *Editor) loadContent(path, text string) {
 		return
 	}
 	clearRecovery(path)
-	e.SetContent(text, path)
+	e.setContent(text, path, enc)
 	e.addRecent(path)
 	e.setStatus("opened " + path)
-}
-
-// readText drains r into a string with as few copies as possible: a
-// strings.Builder grows in place and String() does not re-copy on modern Go.
-func readText(r io.Reader) (string, error) {
-	var sb strings.Builder
-	if _, err := io.Copy(&sb, r); err != nil {
-		return "", err
-	}
-	return sb.String(), nil
 }
 
 // SaveFile writes back to the current path, or falls back to Save As.
@@ -175,7 +176,7 @@ func (e *Editor) SaveFile() {
 // over the target so a crash cannot truncate the original.
 func (e *Editor) writeTo(path string) {
 	out, trimmed := e.serialize()
-	if err := writeFileAtomic(path, out); err != nil {
+	if err := writeFileAtomic(path, encodeDocument(out, e.enc)); err != nil {
 		dialog.ShowError(err, e.win)
 		e.setStatus("save failed")
 		return
@@ -224,9 +225,10 @@ func (e *Editor) adoptTrimmed(trimmed string) {
 	e.updateInfo()
 }
 
-// writeFileAtomic writes s to path via a same-directory temp file, preserving
-// the target's permissions and resolving symlinks so the link itself survives.
-func writeFileAtomic(path, s string) error {
+// writeFileAtomic writes data to path via a same-directory temp file,
+// preserving the target's permissions and resolving symlinks so the link itself
+// survives.
+func writeFileAtomic(path string, data []byte) error {
 	target := path
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		target = resolved
@@ -243,7 +245,7 @@ func writeFileAtomic(path, s string) error {
 		return err
 	}
 	tmp := f.Name()
-	if _, err := io.WriteString(f, s); err != nil {
+	if _, err := f.Write(data); err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return err
@@ -286,7 +288,7 @@ func (e *Editor) SaveAsFile() {
 		}
 
 		out, trimmed := e.serialize()
-		if _, err := io.WriteString(wc, out); err != nil {
+		if _, err := wc.Write(encodeDocument(out, e.enc)); err != nil {
 			wc.Close()
 			dialog.ShowError(err, e.win)
 			return

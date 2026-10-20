@@ -27,7 +27,11 @@ day-to-day features you actually reach for — no plugin system, no bloat.
 - **Trim trailing whitespace on save** (optional, persisted)
 - **Line-ending aware** — CRLF/CR files are normalised for editing and restored
   on save; the convention is shown in the status bar
-- **Undo / redo**, **cut / copy / paste**, **select all**
+- **Encoding aware** — UTF-8, UTF-8 with BOM and UTF-16 (LE/BE) are detected and
+  written back in their original form; binary files and UTF-32 are refused
+  instead of being corrupted on save
+- **Undo / redo** covering typing *and* the whole-buffer commands (line
+  operations, replace all), **cut / copy / paste**, **select all**
 - **Word wrap** toggle (persisted)
 - **Font zoom** in/out/reset (persisted)
 - **Tooltips** — hover any toolbar or find-bar button to see what it does
@@ -83,6 +87,8 @@ Gaze/
     fileops.go            # file I/O (atomic), recent files, session, geometry
     find.go               # find & replace (literal + regex), history, go-to-line
     autosave.go           # crash-recovery snapshots
+    undo.go               # snapshot undo for the whole-buffer commands
+    encoding.go           # UTF-8/UTF-16 detection and byte-order marks
     text.go               # rune/offset/text helpers, line ops, EOL + indent
     tooltip.go            # hover tooltips for toolbar/find-bar buttons
   internal/theme/theme.go # Light/Dark selection, font zoom, persistence
@@ -124,8 +130,12 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
 ## Known limitations (Fyne)
 
 - `widget.Entry` exposes no range-edit API, so **find/replace and the line
-  operations rebuild the buffer via `SetText`**; this clears the entry's undo
-  history for that operation.
+  operations rebuild the buffer via `SetText`**. Gaze snapshots the buffer
+  around those rewrites so they stay undoable, but the rewrite clears Entry's
+  native history — undoing one restores the whole pre-command buffer in a single
+  step rather than replaying the keystrokes that preceded it.
+- BOM-less UTF-16 is detected and refused with an explanatory message rather
+  than decoded, because guessing the byte order of an unmarked file is not safe.
 - Selection is unexported, so commands act on the caret's line rather than a
   selection.
 

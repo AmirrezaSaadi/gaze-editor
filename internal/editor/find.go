@@ -245,13 +245,19 @@ func (e *Editor) ReplaceAll() {
 }
 
 // replaceRange rewrites the whole buffer, replacing [start, start+n) with repl.
-// widget.Entry exposes no range-edit API, so a full SetText is used.
+// widget.Entry exposes no range-edit API, so a full SetText is used; the
+// snapshot is what keeps the rewrite undoable.
 func (e *Editor) replaceRange(start, n int, repl string) {
 	text := e.entry.Text
 	if start < 0 || start+n > len(text) {
 		return
 	}
-	e.entry.SetText(text[:start] + repl + text[start+n:])
+	next := text[:start] + repl + text[start+n:]
+	if next == text {
+		return
+	}
+	e.pushUndo()
+	e.entry.SetText(next)
 }
 
 // moveCursorTo places the caret at a byte offset and scrolls it into view.

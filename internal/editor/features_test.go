@@ -135,7 +135,7 @@ func TestWriteFileAtomicPreservesMode(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeFileAtomic(path, "new"); err != nil {
+	if err := writeFileAtomic(path, []byte("new")); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
