@@ -1,5 +1,7 @@
 # Gaze — a tiny, fast text editor
 
+[![CI](https://github.com/AmirrezaSaadi/gaze-editor/actions/workflows/ci.yml/badge.svg)](https://github.com/AmirrezaSaadi/gaze-editor/actions/workflows/ci.yml)
+
 A small, keyboard-first text editor built with [Fyne](https://fyne.io).
 Monospaced editing surface, stock **Light** and **Dark** themes, and only the
 day-to-day features you actually reach for — no plugin system, no bloat.
@@ -138,6 +140,10 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
   than decoded, because guessing the byte order of an unmarked file is not safe.
 - Selection is unexported, so commands act on the caret's line rather than a
   selection.
+
+## Changes
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 ## License
 

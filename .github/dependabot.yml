@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  # Fyne is the only direct dependency. Its patch releases are routine, but a
+  # minor bump does add API, so only patches are grouped into one PR.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+    groups:
+      go-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+
+  # actions/checkout, setup-go, upload-artifact and friends: group them so a
+  # round of updates is one PR rather than five.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns: ["*"]

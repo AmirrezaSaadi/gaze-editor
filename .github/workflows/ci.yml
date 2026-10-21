@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push supersedes an in-flight run on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: vet, format and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Fyne needs OpenGL, X11 and Wayland headers to compile with cgo on Linux:
+      # go-gl/glfw >= 3.4 builds its Wayland backend by default.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc \
+            libgl1-mesa-dev \
+            xorg-dev \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt'd — run 'gofmt -w .'"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Check go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      # The suite runs without the release build tags, so make sure what users
+      # actually get still compiles.
+      - name: Build with release flags
+        run: make build
+
+  # A tag-triggered release is a late place to discover that the build only
+  # breaks on Windows or macOS — that already happened once with the Wayland
+  # headers. Building the release tags on the other platforms catches it early.
+  build:
+    name: build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build with release flags
+        run: go build -trimpath -tags no_emoji,no_animations ./...
