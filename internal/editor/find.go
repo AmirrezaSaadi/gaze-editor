@@ -43,6 +43,32 @@ func newMatcher(query string, regex, matchCase bool) (*matcher, error) {
 	return m, nil
 }
 
+// matches returns every match of the regular expression in the whole buffer.
+//
+// Searching the full text rather than text[from:] matters: a slice makes its
+// own first byte look like the start of the text, so ^ would match mid-buffer
+// and \b would fire in the middle of a word.
+func (m *matcher) matches(text string) [][]int {
+	if m.literal || m.re == nil {
+		return nil
+	}
+	return m.re.FindAllStringSubmatchIndex(text, -1)
+}
+
+// atMatch returns the submatch indices of the regex match beginning exactly at
+// byte offset off.
+func (m *matcher) atMatch(text string, off int) ([]int, bool) {
+	for _, loc := range m.matches(text) {
+		if loc[0] > off {
+			break // matches are ordered, so it can only get further away
+		}
+		if loc[0] == off {
+			return loc, true
+		}
+	}
+	return nil, false
+}
+
 // next returns the first match beginning at or after byte offset from.
 func (m *matcher) next(text string, from int) (start, length int, ok bool) {
 	if m.query == "" || from > len(text) {
@@ -58,17 +84,18 @@ func (m *matcher) next(text string, from int) (start, length int, ok bool) {
 	if from < 0 {
 		from = 0
 	}
-	loc := m.re.FindStringIndex(text[from:])
-	if loc == nil {
-		return 0, 0, false
+	for _, loc := range m.matches(text) {
+		if loc[0] >= from {
+			return loc[0], loc[1] - loc[0], true
+		}
 	}
-	return from + loc[0], loc[1] - loc[0], true
+	return 0, 0, false
 }
 
 // at reports whether a match begins exactly at byte offset off, returning its
 // length.
 func (m *matcher) at(text string, off int) (length int, ok bool) {
-	if m.query == "" {
+	if m.query == "" || off < 0 || off > len(text) {
 		return 0, false
 	}
 	if m.literal {
@@ -77,11 +104,8 @@ func (m *matcher) at(text string, off int) (length int, ok bool) {
 		}
 		return 0, false
 	}
-	if off < 0 || off > len(text) {
-		return 0, false
-	}
-	loc := m.re.FindStringSubmatchIndex(text[off:])
-	if loc == nil || loc[0] != 0 {
+	loc, found := m.atMatch(text, off)
+	if !found {
 		return 0, false
 	}
 	return loc[1] - loc[0], true
@@ -93,11 +117,11 @@ func (m *matcher) expand(text string, off int, repl string) string {
 	if m.literal {
 		return repl
 	}
-	loc := m.re.FindStringSubmatchIndex(text[off:])
-	if loc == nil || loc[0] != 0 {
+	loc, ok := m.atMatch(text, off)
+	if !ok {
 		return repl
 	}
-	return string(m.re.ExpandString(nil, repl, text[off:], loc))
+	return string(m.re.ExpandString(nil, repl, text, loc))
 }
 
 // replaceAll replaces every match, returning the new text and match count.
@@ -234,13 +258,18 @@ func (e *Editor) ReplaceAll() {
 	e.recordFind(query)
 
 	text := e.entry.Text
+	at := runeOffset(text, e.entry.CursorRow, e.entry.CursorColumn)
 	out, count := m.replaceAll(text, e.replEntry.Text)
 	if count == 0 {
 		e.setStatus("no matches for " + strconv.Quote(query))
 		return
 	}
 	e.replaceRange(0, len(text), out)
-	e.moveCursorTo(0)
+	// Stay where the caret was rather than jumping to the top of the buffer.
+	if at > len(out) {
+		at = len(out)
+	}
+	e.moveCursorTo(at)
 	e.setStatus(fmt.Sprintf("replaced %d occurrences", count))
 }
 

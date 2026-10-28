@@ -2,6 +2,10 @@ BINARY := gaze
 PKG    := ./cmd/gaze
 ICON   := Icon.png
 
+# Version stamped into the binary so `gaze -v` matches the tag it was built
+# from. Release builds pass the tag explicitly; local builds use git describe.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 # no_emoji drops Fyne's bundled 4 MB emoji font (the system one is used
 # instead); no_animations skips the cursor-blink and button tap animations,
 # saving a little more code, CPU and memory.
@@ -9,7 +13,7 @@ ICON   := Icon.png
 # reproducible and small.
 TAGS    := no_emoji,no_animations
 GOFLAGS := -trimpath -tags $(TAGS)
-LDFLAGS := -s -w -buildid=
+LDFLAGS := -s -w -buildid= -X main.version=$(VERSION)
 
 # Where `make install` drops things (XDG-ish, no root needed).
 PREFIX  ?= $(HOME)/.local

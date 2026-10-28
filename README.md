@@ -18,7 +18,9 @@ day-to-day features you actually reach for — no plugin system, no bloat.
 - **Atomic save** — writes a synced temp file and renames it over the target,
   preserving permissions (and symlinks) so a crash cannot truncate your file
 - **Autosave recovery** — dirty buffers are snapshotted to the cache dir and
-  offered back after a crash
+  offered back after a crash, untitled buffers included
+- **Save guard** — a save warns when the file was changed on disk since it was
+  opened, rather than overwriting it silently
 - **Session restore** — reopen the last file and caret position on a bare launch
 - **Drag & drop** a file onto the window to open it
 - **Recent files** — persisted list (max 10) under *File → Open Recent*

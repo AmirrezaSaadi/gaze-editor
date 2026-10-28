@@ -9,7 +9,43 @@ Releases are published on the
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Crash recovery for untitled buffers. Buffers with no file were never
+  snapshotted, so they were exactly the ones a crash could lose; they are now
+  written to a draft slot and offered back at the next launch.
+
+### Changed
+
+- Saves run on a background goroutine and so do recovery snapshots, so a slow
+  disk or network mount no longer freezes the window. Edits typed while a save
+  is in flight are kept and leave the document dirty.
+- Word and character counts are recounted once typing pauses for large buffers,
+  instead of on every keystroke.
+- `debug.FreeOSMemory` only runs for buffers over 8 MiB, since it stops the
+  world.
+- Status messages clear themselves after a few seconds.
+- Saving warns when the file was changed on disk by another program since it was
+  opened, instead of overwriting it silently.
+
+### Fixed
+
+- A column on the command line (`gaze file:10:5`) put the caret one character to
+  the right. The column is 1-based, like the line.
+- **Regex search treated the search offset as the start of the buffer.** `^`
+  matched mid-file and `\b` fired inside a word, so find could skip matches and
+  replace could rewrite text that was not a match at all.
+- **Discarding unsaved changes left the recovery snapshot behind**, so the edits
+  the user threw away were offered back the next time the same file was opened.
+- Replace All jumped the caret to the top of the buffer; it now stays where it
+  was.
+- Trimming trailing whitespace on save discarded the undo history. The rewrite
+  is now undoable like any other whole-buffer command.
+- Esc moved focus into the editor even when the find bar was closed, stealing
+  the keystroke from whatever had focus.
+- `gaze -v` reported a hard-coded version and could disagree with the tag it was
+  built from. The version is now stamped in with `-X main.version` by both the
+  Makefile and the release workflow.
 
 ## [1.2.2] - 2026-10-20
 

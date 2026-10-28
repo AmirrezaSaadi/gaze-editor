@@ -19,6 +19,10 @@ func newTestEditor(t *testing.T) *Editor {
 	e := New(a, w)
 	e.BuildUI()
 	w.Resize(fyne.NewSize(900, 650))
+	// Recovery snapshots are exercised explicitly by the tests that care. Left
+	// on, a test that types into an untitled buffer would write to the shared
+	// draft slot from a background goroutine while another test inspects it.
+	e.autosaveOn = false
 	return e
 }
 

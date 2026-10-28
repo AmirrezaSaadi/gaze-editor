@@ -17,7 +17,10 @@ import (
 	"gaze/internal/editor"
 )
 
-const version = "1.2.2"
+// version is the build version. Release builds override it with
+// -ldflags "-X main.version=$VERSION" so the binary cannot drift from the tag
+// it was cut from; the literal below is what `go run` and `go test` report.
+var version = "1.2.2"
 
 func main() {
 	// Keep the resident set small: let the collector run eagerly rather than
@@ -102,7 +105,11 @@ func main() {
 			ed.OpenPathAt(file, line, col)
 		}
 	default:
-		ed.RestoreSession()
+		if !ed.RestoreSession() {
+			// Nothing to reopen: an untitled buffer from a crashed session may
+			// still be waiting in the recovery cache.
+			ed.OfferDraftRecovery()
+		}
 	}
 
 	w.CenterOnScreen()

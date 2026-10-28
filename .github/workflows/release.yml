@@ -31,14 +31,14 @@ jobs:
             goarch: amd64
             binary: gaze
             archive: tar.gz
-            ldflags: -s -w -buildid=
+            ldflags: -s -w -buildid= -X main.version=${{ env.VERSION }}
           - name: linux-arm64
             os: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
             binary: gaze
             archive: tar.gz
-            ldflags: -s -w -buildid=
+            ldflags: -s -w -buildid= -X main.version=${{ env.VERSION }}
           - name: windows-amd64
             os: windows-latest
             goos: windows
@@ -46,21 +46,21 @@ jobs:
             binary: gaze.exe
             archive: zip
             # -H windowsgui hides the console window that would otherwise pop up.
-            ldflags: -s -w -H windowsgui -buildid=
+            ldflags: -s -w -H windowsgui -buildid= -X main.version=${{ env.VERSION }}
           - name: darwin-amd64
             os: macos-latest
             goos: darwin
             goarch: amd64
             binary: gaze
             archive: tar.gz
-            ldflags: -s -w -buildid=
+            ldflags: -s -w -buildid= -X main.version=${{ env.VERSION }}
           - name: darwin-arm64
             os: macos-latest
             goos: darwin
             goarch: arm64
             binary: gaze
             archive: tar.gz
-            ldflags: -s -w -buildid=
+            ldflags: -s -w -buildid= -X main.version=${{ env.VERSION }}
 
     steps:
       - uses: actions/checkout@v4

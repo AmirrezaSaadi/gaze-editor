@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/dialog"
@@ -51,7 +52,7 @@ func (e *Editor) setContent(text, path, enc string) {
 	e.currentFile = path
 	e.dirty = false
 	e.refreshChrome()
-	freeMemory()
+	freeMemory(len(text))
 }
 
 // confirmDiscard runs proceed immediately, or first asks the user to confirm
@@ -64,10 +65,19 @@ func (e *Editor) confirmDiscard(proceed func()) {
 	dialog.ShowConfirm("Unsaved changes",
 		"The current file has unsaved changes.\nDiscard them and continue?",
 		func(ok bool) {
-			if ok {
-				proceed()
+			if !ok {
+				return
 			}
+			e.discardChanges()
+			proceed()
 		}, e.win)
+}
+
+// discardChanges drops the recovery snapshot belonging to the buffer that is
+// about to be abandoned. Without this the snapshot outlives the discard and the
+// next open of the same file offers the thrown-away edits back.
+func (e *Editor) discardChanges() {
+	clearRecovery(e.recoveryKey())
 }
 
 // NewFile clears the buffer and detaches the backing path.
@@ -126,17 +136,24 @@ func (e *Editor) OpenPath(path string) {
 	e.loadContent(path, text, enc)
 }
 
-// OpenPathAt loads path and, when line > 0, places the caret at line:col.
+// OpenPathAt loads path and, when line > 0, places the caret at line:col. Both
+// numbers are 1-based, matching the file:line:col form on the command line, so
+// column 0 and column 1 both mean the start of the line.
 func (e *Editor) OpenPathAt(path string, line, col int) {
 	e.OpenPath(path)
-	if line > 0 {
-		e.gotoLineCol(line, col)
+	if line <= 0 {
+		return
 	}
+	if col > 0 {
+		col--
+	}
+	e.gotoLineCol(line, col)
 }
 
 // loadContent installs file text, offering a crash-recovery snapshot first when
 // one exists and is at least as new as the file on disk.
 func (e *Editor) loadContent(path, text, enc string) {
+	e.recordDiskState(path)
 	if rec, ok := recoveryFor(path); ok {
 		name := filepath.Base(path)
 		dialog.ShowConfirm("Recover unsaved changes?",
@@ -162,48 +179,68 @@ func (e *Editor) loadContent(path, text, enc string) {
 	e.setStatus("opened " + path)
 }
 
-// SaveFile writes back to the current path, or falls back to Save As.
+// SaveFile writes back to the current path, or falls back to Save As. The write
+// itself happens off the UI goroutine, so a slow disk or network mount cannot
+// freeze the window.
 func (e *Editor) SaveFile() {
+	if e.saving {
+		e.setStatus("save already in progress")
+		return
+	}
 	if e.currentFile == "" {
 		e.SaveAsFile()
 		return
 	}
-	e.writeTo(e.currentFile)
-}
-
-// writeTo trims (when enabled), restores the file's line-ending convention and
-// writes atomically: a temp file in the same directory is fsynced and renamed
-// over the target so a crash cannot truncate the original.
-func (e *Editor) writeTo(path string) {
-	out, trimmed := e.serialize()
-	if err := writeFileAtomic(path, encodeDocument(out, e.enc)); err != nil {
-		dialog.ShowError(err, e.win)
-		e.setStatus("save failed")
+	path := e.currentFile
+	if e.externalChange(path) {
+		dialog.ShowConfirm("File changed on disk",
+			filepath.Base(path)+" was changed by another program after Gaze opened it.\nOverwrite it with this buffer?",
+			func(overwrite bool) {
+				if !overwrite {
+					e.setStatus("save cancelled — file changed on disk")
+					return
+				}
+				e.recordDiskState(path) // accept the change so we do not ask twice
+				e.saveAsync(path)
+			}, e.win)
 		return
 	}
-	e.adoptTrimmed(trimmed)
-
-	e.currentFile = path
-	e.dirty = false
-	e.refreshChrome()
-	e.addRecent(path)
-	e.saveSession(path)
-	clearRecovery(path)
-	e.setStatus("saved " + path)
-	freeMemory()
+	e.saveAsync(path)
 }
 
-// serialize renders the buffer for disk: trailing whitespace is stripped when
-// the option is on and line endings are converted back to the file's style. It
-// also returns the trimmed \n-only buffer so callers can keep the editor in
-// sync with what was written.
-func (e *Editor) serialize() (out, trimmed string) {
-	trimmed = e.entry.Text
-	if e.trimOnSave {
+// saveRequest captures everything a save needs, so the file write can happen on
+// a background goroutine without reading widgets concurrently with editing.
+type saveRequest struct {
+	path    string
+	text    string
+	eol     string
+	enc     string
+	trim    bool
+	prevKey string // recovery key the buffer had before the save
+}
+
+// pendingSave snapshots the current buffer and document settings.
+func (e *Editor) pendingSave(path string) saveRequest {
+	return saveRequest{
+		path:    path,
+		text:    e.entry.Text,
+		eol:     e.eol,
+		enc:     e.enc,
+		trim:    e.trimOnSave,
+		prevKey: e.recoveryKey(),
+	}
+}
+
+// render produces the bytes for disk and the \n-only buffer they came from:
+// trailing whitespace is stripped when the option is on and line endings are
+// converted back to the file's style.
+func (r saveRequest) render() (out, trimmed string) {
+	trimmed = r.text
+	if r.trim {
 		trimmed = trimTrailingSpace(trimmed)
 	}
 	out = trimmed
-	switch e.eol {
+	switch r.eol {
 	case eolCRLF:
 		out = strings.ReplaceAll(out, "\n", "\r\n")
 	case eolCR:
@@ -212,17 +249,120 @@ func (e *Editor) serialize() (out, trimmed string) {
 	return out, trimmed
 }
 
+// write renders and writes the request atomically, returning the buffer that
+// was actually written.
+func (r saveRequest) write() (trimmed string, err error) {
+	out, trimmed := r.render()
+	if err := writeFileAtomic(r.path, encodeDocument(out, r.enc)); err != nil {
+		return "", err
+	}
+	return trimmed, nil
+}
+
+// writeTo writes the buffer to path synchronously, reporting errors in the UI.
+// It is kept synchronous for callers that need the file on disk immediately;
+// the interactive save paths use saveAsync.
+func (e *Editor) writeTo(path string) {
+	req := e.pendingSave(path)
+	trimmed, err := req.write()
+	if err != nil {
+		dialog.ShowError(err, e.win)
+		e.setStatus("save failed")
+		return
+	}
+	e.finishSave(req, trimmed)
+}
+
+// saveAsync writes the buffer on a background goroutine and applies the result
+// on the UI goroutine.
+func (e *Editor) saveAsync(path string) {
+	req := e.pendingSave(path)
+	e.saving = true
+	e.setStatus("saving " + path)
+	go func() {
+		trimmed, err := req.write()
+		fyne.Do(func() {
+			e.saving = false
+			if err != nil {
+				dialog.ShowError(err, e.win)
+				e.setStatus("save failed")
+				return
+			}
+			e.finishSave(req, trimmed)
+		})
+	}()
+}
+
+// finishSave installs the results of a successful write. Edits made while the
+// write was in flight are preserved and leave the document dirty.
+func (e *Editor) finishSave(req saveRequest, trimmed string) {
+	sameBuffer := e.entry.Text == req.text
+	if sameBuffer {
+		e.adoptTrimmed(trimmed)
+	}
+	e.currentFile = req.path
+	e.dirty = e.entry.Text != trimmed
+	e.recordDiskState(req.path)
+	e.refreshChrome()
+	e.addRecent(req.path)
+	e.saveSession(req.path)
+	clearRecovery(req.path)
+	if sameBuffer {
+		// The buffer is what was written, so any older snapshot (a draft or a
+		// previous session's) is obsolete. If the buffer moved on while the
+		// write was running, its snapshot still holds recoverable edits.
+		clearRecovery(req.prevKey)
+	}
+	e.setStatus("saved " + req.path)
+	freeMemory(len(trimmed))
+}
+
+// serialize renders the buffer for disk. It also returns the trimmed \n-only
+// buffer so callers can keep the editor in sync with what was written.
+func (e *Editor) serialize() (out, trimmed string) {
+	return e.pendingSave(e.currentFile).render()
+}
+
 // adoptTrimmed mirrors a save-time trim back into the buffer without marking
-// the document dirty.
+// the document dirty. The pre-trim buffer is snapshotted so the trim can still
+// be undone.
 func (e *Editor) adoptTrimmed(trimmed string) {
 	if trimmed == e.entry.Text {
 		return
 	}
+	e.pushUndo()
 	e.loading = true
 	e.entry.SetText(trimmed)
 	e.loading = false
 	e.updateStats()
 	e.updateInfo()
+}
+
+// recordDiskState remembers the on-disk identity of path so a later save can
+// tell whether another program changed the file underneath us.
+func (e *Editor) recordDiskState(path string) {
+	e.diskPath, e.diskMod, e.diskSize, e.diskKnown = "", time.Time{}, 0, false
+	if path == "" {
+		return
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	e.diskPath, e.diskMod, e.diskSize, e.diskKnown = path, fi.ModTime(), fi.Size(), true
+}
+
+// externalChange reports whether path was modified by someone else since Gaze
+// last read or wrote it. An unknown state (a new file) is never a conflict.
+func (e *Editor) externalChange(path string) bool {
+	if path == "" || !e.diskKnown || e.diskPath != path {
+		return false
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false // gone: let the save recreate it
+	}
+	return !fi.ModTime().Equal(e.diskMod) || fi.Size() != e.diskSize
 }
 
 // writeFileAtomic writes data to path via a same-directory temp file,
@@ -287,23 +427,29 @@ func (e *Editor) SaveAsFile() {
 			return // cancelled
 		}
 
-		out, trimmed := e.serialize()
-		if _, err := wc.Write(encodeDocument(out, e.enc)); err != nil {
-			wc.Close()
-			dialog.ShowError(err, e.win)
-			return
-		}
-		wc.Close()
-		e.adoptTrimmed(trimmed)
-
-		e.currentFile = wc.URI().Path()
-		e.dirty = false
-		e.refreshChrome()
-		e.addRecent(e.currentFile)
-		e.saveSession(e.currentFile)
-		clearRecovery(e.currentFile)
-		e.setStatus("saved " + e.currentFile)
-		freeMemory()
+		path := wc.URI().Path()
+		req := e.pendingSave(path)
+		e.saving = true
+		e.setStatus("saving " + path)
+		go func() {
+			out, trimmed := req.render()
+			_, werr := wc.Write(encodeDocument(out, req.enc))
+			cerr := wc.Close()
+			fyne.Do(func() {
+				e.saving = false
+				if werr != nil {
+					dialog.ShowError(werr, e.win)
+					e.setStatus("save failed")
+					return
+				}
+				if cerr != nil {
+					dialog.ShowError(cerr, e.win)
+					e.setStatus("save failed")
+					return
+				}
+				e.finishSave(req, trimmed)
+			})
+		}()
 	}, e.win)
 
 	d.SetFileName(e.defaultFileName())
@@ -387,20 +533,27 @@ func (e *Editor) saveSession(path string) {
 // RestoreSession reopens the file from the previous session (if it still
 // exists) and returns to where the caret was. It is a no-op when there is
 // nothing to restore.
-func (e *Editor) RestoreSession() {
+// RestoreSession reopens the file from the previous session (if it still
+// exists) and returns to where the caret was. It reports whether a document was
+// actually restored.
+func (e *Editor) RestoreSession() bool {
 	path := e.app.Preferences().StringWithFallback(prefLastFile, "")
 	if path == "" {
-		return
+		return false
 	}
 	if _, err := os.Stat(path); err != nil {
-		return
+		return false
 	}
 	e.OpenPath(path)
+	if e.currentFile != path {
+		return false
+	}
 	row := e.app.Preferences().IntWithFallback(prefLastRow, 0)
 	col := e.app.Preferences().IntWithFallback(prefLastCol, 0)
 	if row > 0 || col > 0 {
 		e.gotoLineCol(row+1, col)
 	}
+	return true
 }
 
 // onDropped opens the first file dropped onto the window.
@@ -421,6 +574,7 @@ func (e *Editor) Quit() {
 	e.confirmDiscard(func() {
 		e.saveSession(e.currentFile)
 		e.saveGeometry()
+		e.stopTimers()
 		e.app.Quit()
 	})
 }
@@ -435,6 +589,16 @@ func (e *Editor) saveGeometry() {
 	p.SetFloat(prefWinH, float64(size.Height))
 }
 
-// freeMemory returns freed heap back to the OS after large file operations so
+// freeMemoryThreshold is the buffer size above which a save or load is followed
+// by a hand-back of free heap. debug.FreeOSMemory stops the world, so running it
+// after every small file would cost more than it saves.
+const freeMemoryThreshold = 8 << 20
+
+// freeMemory returns freed heap back to the OS after a large file operation so
 // the resident set does not creep up as files are opened and saved.
-func freeMemory() { debug.FreeOSMemory() }
+func freeMemory(n int) {
+	if n < freeMemoryThreshold {
+		return
+	}
+	debug.FreeOSMemory()
+}

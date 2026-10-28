@@ -30,6 +30,20 @@ const (
 	prefAutosave = "autosave"
 )
 
+// Timing and size knobs. These are variables rather than constants so tests can
+// shorten or narrow them without sleeping for seconds.
+var (
+	// statusTimeout is how long a status message stays before it clears.
+	statusTimeout = 4 * time.Second
+	// statsDelay is how long typing has to pause before a large buffer's
+	// counts are recomputed.
+	statsDelay = 150 * time.Millisecond
+	// statsSyncLimit is the buffer size up to which the counts are recomputed
+	// on every keystroke. Beyond it the recount is deferred so that a large
+	// file stays responsive.
+	statsSyncLimit = 256 << 10
+)
+
 // Editor owns the Gaze window state: the text buffer, the current file, the
 // find bar, the status line, recent files and the theme/zoom manager.
 type Editor struct {
@@ -80,6 +94,18 @@ type Editor struct {
 	histDraft string
 
 	lastAutosave time.Time
+
+	statusSeq   int
+	statusTimer *time.Timer
+	statsTimer  *time.Timer
+	saving      bool
+
+	// Identity of the file on disk as Gaze last read or wrote it, so a save
+	// can tell whether another program changed it underneath us.
+	diskPath  string
+	diskMod   time.Time
+	diskSize  int64
+	diskKnown bool
 
 	statWords int
 	statChars int
@@ -186,7 +212,7 @@ func (e *Editor) buildLayout() {
 	main := container.NewBorder(top, bottom, nil, nil, scroll)
 	e.win.SetContent(container.NewStack(main, e.tipLayer))
 	if c := e.win.Canvas(); c != nil {
-		c.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyEscape}, func(fyne.Shortcut) { e.HideFind() })
+		c.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyEscape}, func(fyne.Shortcut) { e.escape() })
 		c.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyUp, Modifier: fyne.KeyModifierAlt}, func(fyne.Shortcut) { e.historyPrev() })
 		c.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyDown, Modifier: fyne.KeyModifierAlt}, func(fyne.Shortcut) { e.historyNext() })
 	}
@@ -279,10 +305,31 @@ func (e *Editor) onChanged() {
 	}
 	e.dropRedo()
 	e.dirty = true
-	e.updateStats()
+	e.updateStatsForChange()
 	e.updateTitle()
 	e.updateInfo()
 	e.maybeAutosave()
+}
+
+// updateStatsForChange keeps typing cheap in large buffers: small files are
+// recounted immediately, big ones once the user pauses.
+func (e *Editor) updateStatsForChange() {
+	if len(e.entry.Text) <= statsSyncLimit {
+		e.updateStats()
+		return
+	}
+	if e.statsTimer != nil {
+		e.statsTimer.Stop()
+	}
+	e.statsTimer = time.AfterFunc(statsDelay, func() {
+		fyne.Do(func() {
+			if e.entry == nil || e.info == nil {
+				return
+			}
+			e.updateStats()
+			e.updateInfo()
+		})
+	})
 }
 
 // updateStats recomputes the cached word/character counts.
@@ -344,10 +391,53 @@ func (e *Editor) indentLabel() string {
 	return fmt.Sprintf("sp%d", w)
 }
 
-// setStatus updates the left-hand status message.
+// setStatus updates the left-hand status message and schedules it to clear, so
+// one-off remarks like "save failed" do not sit in the bar forever.
 func (e *Editor) setStatus(s string) {
-	if e.status != nil {
-		e.status.SetText(s)
+	if e.status == nil {
+		return
+	}
+	e.status.SetText(s)
+	e.statusSeq++
+	seq := e.statusSeq
+	if e.statusTimer != nil {
+		e.statusTimer.Stop()
+		e.statusTimer = nil
+	}
+	if s == "" {
+		return
+	}
+	e.statusTimer = time.AfterFunc(statusTimeout, func() {
+		fyne.Do(func() {
+			// A newer message may have replaced this one already.
+			if e.status == nil || e.statusSeq != seq {
+				return
+			}
+			e.status.SetText("")
+		})
+	})
+}
+
+// escape closes the find bar when it is open and does nothing otherwise.
+// Forcing focus back to the editor on every Esc would steal the keystroke from
+// dialogs and from the find bar's own fields.
+func (e *Editor) escape() {
+	if e.findBar == nil || !e.findBar.Visible() {
+		return
+	}
+	e.HideFind()
+}
+
+// stopTimers cancels the deferred UI work so a closing window does not fire
+// callbacks into a dead canvas.
+func (e *Editor) stopTimers() {
+	if e.statusTimer != nil {
+		e.statusTimer.Stop()
+		e.statusTimer = nil
+	}
+	if e.statsTimer != nil {
+		e.statsTimer.Stop()
+		e.statsTimer = nil
 	}
 }
 
