@@ -20,7 +20,7 @@ import (
 // version is the build version. Release builds override it with
 // -ldflags "-X main.version=$VERSION" so the binary cannot drift from the tag
 // it was cut from; the literal below is what `go run` and `go test` report.
-var version = "1.2.2"
+var version = "1.2.3"
 
 func main() {
 	// Keep the resident set small: let the collector run eagerly rather than
