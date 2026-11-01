@@ -78,8 +78,14 @@ func main() {
 	var initial string
 	if stdin {
 		var sb strings.Builder
-		if _, err := io.Copy(&sb, os.Stdin); err != nil {
+		// Refuse an oversized pipe instead of handing a widget a buffer it will
+		// lay out in full.
+		if _, err := io.Copy(&sb, io.LimitReader(os.Stdin, editor.MaxOpenBytes+1)); err != nil {
 			fmt.Fprintf(os.Stderr, "gaze: reading stdin: %v\n", err)
+			os.Exit(1)
+		}
+		if int64(sb.Len()) > editor.MaxOpenBytes {
+			fmt.Fprintf(os.Stderr, "gaze: stdin is larger than %d MB; refusing to open it\n", editor.MaxOpenBytes>>20)
 			os.Exit(1)
 		}
 		initial = sb.String()
@@ -95,8 +101,13 @@ func main() {
 
 	switch {
 	case stdin:
-		ed.SetContent(initial, "")
-		ed.SetStatus("stdin — unsaved")
+		if int64(len(initial)) >= editor.LargeFileBytes {
+			ed.SetContentLarge(initial, "")
+			ed.SetStatus("stdin — unsaved (large-file mode)")
+		} else {
+			ed.SetContent(initial, "")
+			ed.SetStatus("stdin — unsaved")
+		}
 	case file != "":
 		if _, err := os.Stat(file); err != nil {
 			ed.SetContent("", file)

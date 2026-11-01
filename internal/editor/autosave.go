@@ -2,6 +2,7 @@ package editor
 
 import (
 	"hash/fnv"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -54,9 +55,11 @@ func recoveryPath(key string) string {
 
 // maybeAutosave writes a recovery snapshot of the dirty buffer, rate-limited to
 // autosaveInterval so it can be called on every keystroke. Untitled buffers are
-// included: they have no other copy anywhere, so they need this most.
+// included: they have no other copy anywhere, so they need this most. Large-file
+// mode opts out — a snapshot is a copy of the whole document written every 30
+// seconds, which is the cost this mode exists to avoid.
 func (e *Editor) maybeAutosave() {
-	if !e.autosaveOn || !e.dirty {
+	if !e.autosaveOn || !e.dirty || e.largeFile {
 		return
 	}
 	now := time.Now()
@@ -67,7 +70,8 @@ func (e *Editor) maybeAutosave() {
 	e.writeRecoveryAsync()
 }
 
-// writeRecovery stores the current buffer as a crash-recovery snapshot.
+// writeRecovery stores the current buffer as a crash-recovery snapshot, streaming
+// it so no second copy of the document is built.
 func (e *Editor) writeRecovery() {
 	p := recoveryPath(e.recoveryKey())
 	if p == "" {
@@ -76,7 +80,11 @@ func (e *Editor) writeRecovery() {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return
 	}
-	_ = writeFileAtomic(p, []byte(e.entry.Text))
+	text := e.entry.Text
+	_ = writeFileAtomicWith(p, func(w io.Writer) error {
+		_, err := io.WriteString(w, text)
+		return err
+	})
 }
 
 // writeRecoveryAsync snapshots the buffer off the UI goroutine: the temp file,
@@ -90,8 +98,13 @@ func (e *Editor) writeRecoveryAsync() {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return
 	}
-	text := []byte(e.entry.Text)
-	go func() { _ = writeFileAtomic(p, text) }()
+	text := e.entry.Text
+	go func() {
+		_ = writeFileAtomicWith(p, func(w io.Writer) error {
+			_, err := io.WriteString(w, text)
+			return err
+		})
+	}()
 }
 
 // recoveryFor returns a stored snapshot for key when it exists and is not older

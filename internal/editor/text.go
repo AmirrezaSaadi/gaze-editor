@@ -116,21 +116,54 @@ const (
 )
 
 // normalizeEOL converts every line ending in text to \n, reporting which
-// convention the file used so it can be restored on save.
+// convention the file used so it can be restored on save. LF-only text is
+// returned as-is, without copying it.
 func normalizeEOL(text string) (string, string) {
+	if !strings.ContainsRune(text, '\r') {
+		return text, eolLF
+	}
+	style := eolCR
 	if strings.Contains(text, "\r\n") {
-		return strings.ReplaceAll(text, "\r\n", "\n"), eolCRLF
+		style = eolCRLF
 	}
-	if strings.ContainsRune(text, '\r') {
-		return strings.ReplaceAll(text, "\r", "\n"), eolCR
+
+	var b strings.Builder
+	b.Grow(len(text))
+	start := 0
+	for i := 0; i < len(text); i++ {
+		if text[i] != '\r' {
+			continue
+		}
+		b.WriteString(text[start:i])
+		b.WriteByte('\n')
+		if i+1 < len(text) && text[i+1] == '\n' {
+			i++ // \r\n is one line ending
+		}
+		start = i + 1
 	}
-	return text, eolLF
+	b.WriteString(text[start:])
+	return b.String(), style
 }
 
+// indentScanLimit bounds how much of a file detectIndent looks at. The style is
+// settled by the first indented line, so there is no reason to walk a whole
+// multi-megabyte buffer — and splitting it into lines would allocate a header per
+// line on the way.
+const indentScanLimit = 64 << 10
+
 // detectIndent guesses the indentation style from the first indented line,
-// falling back to four spaces.
+// falling back to four spaces. Only the first indentScanLimit bytes are examined.
 func detectIndent(text string) (useTabs bool, width int) {
-	for _, line := range strings.Split(text, "\n") {
+	if len(text) > indentScanLimit {
+		text = text[:indentScanLimit]
+	}
+	for len(text) > 0 {
+		line := text
+		if nl := strings.IndexByte(text, '\n'); nl >= 0 {
+			line, text = text[:nl], text[nl+1:]
+		} else {
+			text = ""
+		}
 		i := 0
 		for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
 			i++
@@ -235,22 +268,41 @@ func outdentLine(text string, row int, useTabs bool, width int) (string, int) {
 }
 
 // trimTrailingSpace strips spaces and tabs from the end of every line. It
-// returns the original string unchanged (no allocation) when there is nothing
-// to trim.
+// returns the original string unchanged (no allocation) when there is nothing to
+// trim, and builds the result in one pass otherwise.
 func trimTrailingSpace(text string) string {
-	changed := false
-	for _, line := range strings.Split(text, "\n") {
-		if strings.TrimRight(line, " \t") != line {
-			changed = true
-			break
-		}
-	}
-	if !changed {
+	if !hasTrailingSpace(text) {
 		return text
 	}
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimRight(line, " \t")
+	var b strings.Builder
+	b.Grow(len(text))
+	start := 0
+	for i := 0; i <= len(text); i++ {
+		if i < len(text) && text[i] != '\n' {
+			continue
+		}
+		b.WriteString(strings.TrimRight(text[start:i], " \t"))
+		if i < len(text) {
+			b.WriteByte('\n')
+		}
+		start = i + 1
 	}
-	return strings.Join(lines, "\n")
+	return b.String()
+}
+
+// hasTrailingSpace reports whether any line ends in a space or tab, without
+// allocating.
+func hasTrailingSpace(text string) bool {
+	for i := 0; i < len(text); i++ {
+		if text[i] != '\n' {
+			continue
+		}
+		if i > 0 && (text[i-1] == ' ' || text[i-1] == '\t') {
+			return true
+		}
+	}
+	if n := len(text); n > 0 && (text[n-1] == ' ' || text[n-1] == '\t') {
+		return true
+	}
+	return false
 }

@@ -9,7 +9,32 @@ Releases are published on the
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Open size limits. Fyne lays out the whole buffer, so a big enough file used to
+  exhaust memory and take the window down with it. Files over 16 MiB now ask
+  before opening and load in **large-file mode** (word wrap, live word/character
+  counts, undo snapshots and crash recovery off); files over 256 MiB are refused
+  with an explanation. Oversized stdin is refused the same way.
+
+### Changed
+
+- Saving streams the encoding, line-ending translation and whitespace trim
+  straight into the temp file. For a 48 MB document that is ~0.1 MB of allocation
+  instead of ~47 MB per save.
+- Crash-recovery snapshots are streamed the same way rather than copying the
+  buffer into a byte slice first.
+- Indentation detection only looks at the first 64 KiB of a file, and trimming
+  trailing whitespace builds one copy instead of two.
+
+### Fixed
+
+- Opening a large file no longer splits the entire buffer into a `[]string` just
+  to guess its indentation (16 bytes of header per line, before Fyne had laid out
+  a single character).
+- A file that grows past the limit between the size check and the read is refused
+  instead of being silently truncated into the buffer — truncation would have
+  looked like a complete document and saved back short.
 
 ## [1.2.3] - 2026-10-28
 

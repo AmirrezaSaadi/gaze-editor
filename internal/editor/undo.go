@@ -39,9 +39,11 @@ func (e *Editor) current() snapshot {
 }
 
 // pushUndo records the pre-change state. Call it immediately before a SetText
-// rewrite, never from inside a restore.
+// rewrite, never from inside a restore. Large-file mode keeps no snapshots: each
+// one is a full copy of the buffer, and a multi-megabyte copy per structural
+// command is exactly what that mode exists to avoid.
 func (e *Editor) pushUndo() {
-	if e.entry == nil || e.restoring {
+	if e.entry == nil || e.restoring || e.largeFile {
 		return
 	}
 	s := e.current()

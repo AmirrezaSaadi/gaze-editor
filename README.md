@@ -19,6 +19,9 @@ day-to-day features you actually reach for — no plugin system, no bloat.
   preserving permissions (and symlinks) so a crash cannot truncate your file
 - **Autosave recovery** — dirty buffers are snapshotted to the cache dir and
   offered back after a crash, untitled buffers included
+- **Large-file guard** — over 16 MiB Gaze asks first and drops the chrome that
+  copies the buffer (wrap, live counts, undo snapshots, recovery); over 256 MiB it
+  refuses instead of exhausting memory
 - **Save guard** — a save warns when the file was changed on disk since it was
   opened, rather than overwriting it silently
 - **Session restore** — reopen the last file and caret position on a bare launch
@@ -133,6 +136,10 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
 
 ## Known limitations (Fyne)
 
+- **Large files are capped, not virtualised.** `widget.Entry` lays out the whole
+  buffer, so Gaze opens files over 16 MiB in a degraded mode and refuses anything
+  over 256 MiB rather than running out of memory. Editing genuinely large files
+  needs a windowed buffer, which the widget cannot provide.
 - `widget.Entry` exposes no range-edit API, so **find/replace and the line
   operations rebuild the buffer via `SetText`**. Gaze snapshots the buffer
   around those rewrites so they stay undoable, but the rewrite clears Entry's

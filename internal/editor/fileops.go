@@ -1,6 +1,9 @@
 package editor
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -23,6 +26,123 @@ const (
 	maxRecent = 10
 )
 
+// Size limits for opening a file. Fyne's Entry lays out the whole buffer, which
+// costs on the order of a kilobyte of heap per line, so past a certain size Gaze
+// has to either shed the chrome that duplicates the document or refuse it.
+// They are variables so tests can move them.
+var (
+	// LargeFileBytes is where opening asks first and switches to large-file mode.
+	LargeFileBytes int64 = 16 << 20
+	// MaxOpenBytes is the hard limit; anything larger is refused.
+	MaxOpenBytes int64 = 256 << 20
+)
+
+// openMode records how a document was opened.
+type openMode int
+
+const (
+	openNormal openMode = iota
+	openLarge
+)
+
+// large reports whether the document is in large-file mode.
+func (m openMode) large() bool { return m == openLarge }
+
+// errTooLarge is returned when a file grows past MaxOpenBytes while it is being
+// read. Truncating the buffer instead would hand the user something that looks
+// whole and then saves back short.
+var errTooLarge = errors.New("file is larger than the open size limit")
+
+// limitReader fails once more than limit bytes have been read, rather than
+// silently truncating the way io.LimitReader would.
+type limitReader struct {
+	r     io.Reader
+	n     int64
+	limit int64
+}
+
+func (l *limitReader) Read(p []byte) (int, error) {
+	if l.n > l.limit {
+		return 0, errTooLarge
+	}
+	n, err := l.r.Read(p)
+	l.n += int64(n)
+	if l.n > l.limit {
+		return 0, errTooLarge
+	}
+	return n, err
+}
+
+// fileSize reports the size of path, for the open size gate.
+func fileSize(path string) (int64, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
+}
+
+// humanBytes renders a byte count the way a person reads it.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// confirmOpenSize decides whether a file of size bytes may be opened, asking the
+// user first when it is merely large. proceed may run asynchronously, once the
+// user has answered.
+func (e *Editor) confirmOpenSize(name string, size int64, proceed func(openMode)) {
+	switch {
+	case size >= MaxOpenBytes:
+		e.reportTooLarge(name, size)
+	case size >= LargeFileBytes:
+		dialog.ShowConfirm("Open large file?",
+			fmt.Sprintf("%s is %s.\n\nGaze can open it in large-file mode, which turns off word wrap, live word and character counts, undo snapshots and crash recovery so the whole buffer is not copied or rescanned. Continue?",
+				name, humanBytes(size)),
+			func(ok bool) {
+				if !ok {
+					e.setStatus("open cancelled — " + name)
+					return
+				}
+				proceed(openLarge)
+			}, e.win)
+	default:
+		proceed(openNormal)
+	}
+}
+
+// reportTooLarge explains a refusal and why the limit exists. A size of zero
+// means "at least the limit, exact size unknown".
+func (e *Editor) reportTooLarge(name string, size int64) {
+	detail := fmt.Sprintf("%s is over Gaze's %s limit.", name, humanBytes(MaxOpenBytes))
+	if size > 0 {
+		detail = fmt.Sprintf("%s is %s, over Gaze's %s limit.", name, humanBytes(size), humanBytes(MaxOpenBytes))
+	}
+	dialog.ShowInformation("File too large",
+		detail+"\n\nFyne lays out the whole buffer, so opening it would need several gigabytes of memory and the window would stop responding. A tool built for huge files (less, grep, or an editor with a windowed buffer) is a better fit.",
+		e.win)
+	e.setStatus("refused " + name + " — too large (over " + humanBytes(MaxOpenBytes) + ")")
+}
+
+// reportOpenError surfaces a failed open, naming the size limit when that is what
+// went wrong.
+func (e *Editor) reportOpenError(err error, name string) {
+	if errors.Is(err, errTooLarge) {
+		e.reportTooLarge(name, 0)
+		return
+	}
+	dialog.ShowError(err, e.win)
+	e.setStatus("open failed")
+}
+
 // SetContent loads text into the editor as the file at path ("" for untitled),
 // assuming UTF-8. Line endings are normalised to \n (remembering the original
 // convention) and the dirty flag is cleared with the change callback suppressed
@@ -31,9 +151,21 @@ func (e *Editor) SetContent(text, path string) {
 	e.setContent(text, path, encUTF8)
 }
 
+// SetContentLarge loads text as a large-file buffer: the chrome that duplicates
+// or rescans the document (word wrap, live counts, undo snapshots, crash
+// recovery) is switched off.
+func (e *Editor) SetContentLarge(text, path string) {
+	e.setContentAs(text, path, encUTF8, openLarge)
+}
+
 // setContent is SetContent with the document's encoding made explicit, so that
 // a file opened as UTF-16 is written back as UTF-16 rather than converted.
 func (e *Editor) setContent(text, path, enc string) {
+	e.setContentAs(text, path, enc, openNormal)
+}
+
+// setContentAs installs a document and applies the open mode it was approved for.
+func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 	text, eol := normalizeEOL(text)
 	e.eol = eol
 	e.enc = enc
@@ -41,6 +173,7 @@ func (e *Editor) setContent(text, path, enc string) {
 		e.enc = encUTF8
 	}
 	e.indentUseTabs, e.indentWidth = detectIndent(text)
+	e.largeFile = mode.large()
 
 	e.loading = true
 	e.entry.SetText(text)
@@ -51,6 +184,7 @@ func (e *Editor) setContent(text, path, enc string) {
 	e.entry.Refresh()
 	e.currentFile = path
 	e.dirty = false
+	e.applyWrap()
 	e.refreshChrome()
 	freeMemory(len(text))
 }
@@ -99,14 +233,29 @@ func (e *Editor) OpenFile() {
 			if r == nil {
 				return // cancelled
 			}
-			defer r.Close()
 
-			text, enc, err := readDocument(r)
-			if err != nil {
-				dialog.ShowError(err, e.win)
-				return
+			path := r.URI().Path()
+			name := filepath.Base(path)
+			if path == "" {
+				name = r.URI().Name()
 			}
-			e.loadContent(r.URI().Path(), text, enc)
+			// The dialog gives a reader, not a size. A file URI can be
+			// stat'ed; anything else (a portal URI, say) is treated as small
+			// and left to the limitReader below.
+			var size int64
+			if fi, serr := os.Stat(path); serr == nil {
+				size = fi.Size()
+			}
+
+			e.confirmOpenSize(name, size, func(mode openMode) {
+				defer r.Close()
+				text, enc, err := readDocument(&limitReader{r: r, limit: MaxOpenBytes})
+				if err != nil {
+					e.reportOpenError(err, name)
+					return
+				}
+				e.loadContentAs(path, text, enc, mode)
+			})
 		}, e.win)
 		d.Show()
 	})
@@ -119,28 +268,41 @@ func (e *Editor) OpenRecent(path string) {
 
 // OpenPath loads path directly, reporting any error in the UI.
 func (e *Editor) OpenPath(path string) {
-	f, err := os.Open(path)
-	if err != nil {
-		dialog.ShowError(err, e.win)
-		e.setStatus("open failed")
-		return
-	}
-	defer f.Close()
-
-	text, enc, err := readDocument(f)
-	if err != nil {
-		dialog.ShowError(err, e.win)
-		e.setStatus("open failed")
-		return
-	}
-	e.loadContent(path, text, enc)
+	e.OpenPathAt(path, 0, 0)
 }
 
 // OpenPathAt loads path and, when line > 0, places the caret at line:col. Both
 // numbers are 1-based, matching the file:line:col form on the command line, so
 // column 0 and column 1 both mean the start of the line.
 func (e *Editor) OpenPathAt(path string, line, col int) {
-	e.OpenPath(path)
+	size, err := fileSize(path)
+	if err != nil {
+		dialog.ShowError(err, e.win)
+		e.setStatus("open failed")
+		return
+	}
+	e.confirmOpenSize(filepath.Base(path), size, func(mode openMode) {
+		e.openPath(path, mode, line, col)
+	})
+}
+
+// openPath reads and installs path. It runs once the size gate has approved the
+// open, and is the only place that reads a file into the buffer.
+func (e *Editor) openPath(path string, mode openMode, line, col int) {
+	f, err := os.Open(path)
+	if err != nil {
+		e.reportOpenError(err, filepath.Base(path))
+		return
+	}
+	defer f.Close()
+
+	text, enc, err := readDocument(&limitReader{r: f, limit: MaxOpenBytes})
+	if err != nil {
+		e.reportOpenError(err, filepath.Base(path))
+		return
+	}
+	e.loadContentAs(path, text, enc, mode)
+
 	if line <= 0 {
 		return
 	}
@@ -153,30 +315,39 @@ func (e *Editor) OpenPathAt(path string, line, col int) {
 // loadContent installs file text, offering a crash-recovery snapshot first when
 // one exists and is at least as new as the file on disk.
 func (e *Editor) loadContent(path, text, enc string) {
+	e.loadContentAs(path, text, enc, openNormal)
+}
+
+// loadContentAs is loadContent with the open mode the file was approved for.
+func (e *Editor) loadContentAs(path, text, enc string, mode openMode) {
 	e.recordDiskState(path)
+	suffix := ""
+	if mode.large() {
+		suffix = " — large-file mode"
+	}
 	if rec, ok := recoveryFor(path); ok {
 		name := filepath.Base(path)
 		dialog.ShowConfirm("Recover unsaved changes?",
 			"Gaze found unsaved changes for "+name+" from an earlier session.\nRestore them?",
 			func(restore bool) {
 				if restore {
-					e.setContent(rec, path, enc)
+					e.setContentAs(rec, path, enc, mode)
 					e.dirty = true
 					e.refreshChrome()
-					e.setStatus("recovered " + path)
+					e.setStatus("recovered " + path + suffix)
 				} else {
 					clearRecovery(path)
-					e.setContent(text, path, enc)
-					e.setStatus("opened " + path)
+					e.setContentAs(text, path, enc, mode)
+					e.setStatus("opened " + path + suffix)
 				}
 				e.addRecent(path)
 			}, e.win)
 		return
 	}
 	clearRecovery(path)
-	e.setContent(text, path, enc)
+	e.setContentAs(text, path, enc, mode)
 	e.addRecent(path)
-	e.setStatus("opened " + path)
+	e.setStatus("opened " + path + suffix)
 }
 
 // SaveFile writes back to the current path, or falls back to Save As. The write
@@ -222,11 +393,13 @@ type saveRequest struct {
 // pendingSave snapshots the current buffer and document settings.
 func (e *Editor) pendingSave(path string) saveRequest {
 	return saveRequest{
-		path:    path,
-		text:    e.entry.Text,
-		eol:     e.eol,
-		enc:     e.enc,
-		trim:    e.trimOnSave,
+		path: path,
+		text: e.entry.Text,
+		eol:  e.eol,
+		enc:  e.enc,
+		// Trimming needs a second copy of the buffer to compare against, so it is
+		// skipped entirely in large-file mode.
+		trim:    e.trimOnSave && !e.largeFile,
 		prevKey: e.recoveryKey(),
 	}
 }
@@ -249,14 +422,26 @@ func (r saveRequest) render() (out, trimmed string) {
 	return out, trimmed
 }
 
-// write renders and writes the request atomically, returning the buffer that
-// was actually written.
+// write renders and writes the request atomically, returning the buffer that was
+// actually written.
 func (r saveRequest) write() (trimmed string, err error) {
-	out, trimmed := r.render()
-	if err := writeFileAtomic(r.path, encodeDocument(out, r.enc)); err != nil {
+	err = writeFileAtomicWith(r.path, func(w io.Writer) error {
+		return writeDocument(w, r.text, r.eol, r.enc, r.trim)
+	})
+	if err != nil {
 		return "", err
 	}
-	return trimmed, nil
+	return r.bufferAfterWrite(), nil
+}
+
+// bufferAfterWrite is the buffer state that matches what write put on disk.
+// Trimming is mirrored back into the editor, so the trimmed text is returned when
+// it is in use.
+func (r saveRequest) bufferAfterWrite() string {
+	if !r.trim {
+		return r.text
+	}
+	return trimTrailingSpace(r.text)
 }
 
 // writeTo writes the buffer to path synchronously, reporting errors in the UI.
@@ -365,10 +550,18 @@ func (e *Editor) externalChange(path string) bool {
 	return !fi.ModTime().Equal(e.diskMod) || fi.Size() != e.diskSize
 }
 
-// writeFileAtomic writes data to path via a same-directory temp file,
-// preserving the target's permissions and resolving symlinks so the link itself
-// survives.
+// writeFileAtomic writes data to path via a same-directory temp file, preserving
+// the target's permissions and resolving symlinks so the link itself survives.
 func writeFileAtomic(path string, data []byte) error {
+	return writeFileAtomicWith(path, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// writeFileAtomicWith writes path atomically, letting fill stream the content so
+// that a large document never has to be built in memory first.
+func writeFileAtomicWith(path string, fill func(io.Writer) error) error {
 	target := path
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		target = resolved
@@ -385,7 +578,7 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	tmp := f.Name()
-	if _, err := f.Write(data); err != nil {
+	if err := fill(f); err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return err
@@ -432,8 +625,7 @@ func (e *Editor) SaveAsFile() {
 		e.saving = true
 		e.setStatus("saving " + path)
 		go func() {
-			out, trimmed := req.render()
-			_, werr := wc.Write(encodeDocument(out, req.enc))
+			werr := writeDocument(wc, req.text, req.eol, req.enc, req.trim)
 			cerr := wc.Close()
 			fyne.Do(func() {
 				e.saving = false
@@ -447,7 +639,7 @@ func (e *Editor) SaveAsFile() {
 					e.setStatus("save failed")
 					return
 				}
-				e.finishSave(req, trimmed)
+				e.finishSave(req, req.bufferAfterWrite())
 			})
 		}()
 	}, e.win)
@@ -531,28 +723,28 @@ func (e *Editor) saveSession(path string) {
 }
 
 // RestoreSession reopens the file from the previous session (if it still
-// exists) and returns to where the caret was. It is a no-op when there is
-// nothing to restore.
-// RestoreSession reopens the file from the previous session (if it still
-// exists) and returns to where the caret was. It reports whether a document was
-// actually restored.
+// exists) and returns to where the caret was. It reports whether an open was
+// started — a large file asks before it loads, so the outcome is known later.
 func (e *Editor) RestoreSession() bool {
 	path := e.app.Preferences().StringWithFallback(prefLastFile, "")
 	if path == "" {
 		return false
 	}
-	if _, err := os.Stat(path); err != nil {
-		return false
-	}
-	e.OpenPath(path)
-	if e.currentFile != path {
+	size, err := fileSize(path)
+	if err != nil {
 		return false
 	}
 	row := e.app.Preferences().IntWithFallback(prefLastRow, 0)
 	col := e.app.Preferences().IntWithFallback(prefLastCol, 0)
-	if row > 0 || col > 0 {
-		e.gotoLineCol(row+1, col)
-	}
+	e.confirmOpenSize(filepath.Base(path), size, func(mode openMode) {
+		e.openPath(path, mode, 0, 0)
+		if e.currentFile != path {
+			return
+		}
+		if row > 0 || col > 0 {
+			e.gotoLineCol(row+1, col)
+		}
+	})
 	return true
 }
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // Encodings Gaze can round-trip. The buffer is always UTF-8 internally; the
@@ -141,37 +142,165 @@ func decodeUTF16(b []byte, littleEndian bool) (string, error) {
 }
 
 // encodeDocument renders s in enc so that a saved file keeps its original
-// encoding and byte-order mark.
+// encoding and byte-order mark. It builds the result in memory; the save paths
+// use writeDocument, which streams instead.
 func encodeDocument(s, enc string) []byte {
+	var b bytes.Buffer
+	b.Grow(len(s) + len(bomUTF8))
+	// bytes.Buffer cannot fail, and the text already carries its final line
+	// endings, so an LF convention leaves them untouched.
+	_ = writeDocument(&b, s, eolLF, enc, false)
+	return b.Bytes()
+}
+
+// writeDocument streams text to w in enc, translating \n to eol and, when trim is
+// set, stripping spaces and tabs from the end of every line. Lines go through a
+// small buffer, so saving never builds a second copy of the document.
+func writeDocument(w io.Writer, text, eol, enc string, trim bool) error {
+	bw := bufio.NewWriterSize(w, 64<<10)
+
 	switch enc {
 	case encUTF8BOM:
-		out := make([]byte, 0, len(bomUTF8)+len(s))
-		out = append(out, bomUTF8...)
-		return append(out, s...)
+		if _, err := bw.Write(bomUTF8); err != nil {
+			return err
+		}
 	case encUTF16LE:
-		return encodeUTF16(s, true)
+		if _, err := bw.Write(bomUTF16LE); err != nil {
+			return err
+		}
 	case encUTF16BE:
-		return encodeUTF16(s, false)
+		if _, err := bw.Write(bomUTF16BE); err != nil {
+			return err
+		}
+	}
+
+	var err error
+	switch enc {
+	case encUTF16LE:
+		err = writeLinesUTF16(bw, text, eol, true, trim)
+	case encUTF16BE:
+		err = writeLinesUTF16(bw, text, eol, false, trim)
 	default:
-		return []byte(s)
+		err = writeLinesUTF8(bw, text, eol, trim)
+	}
+	if err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
+// eachLine calls fn once per line without splitting the text into a slice.
+func eachLine(text string, fn func(line string, hasNewline bool) error) error {
+	for {
+		i := strings.IndexByte(text, '\n')
+		if i < 0 {
+			return fn(text, false)
+		}
+		if err := fn(text[:i], true); err != nil {
+			return err
+		}
+		text = text[i+1:]
 	}
 }
 
-func encodeUTF16(s string, littleEndian bool) []byte {
-	units := utf16.Encode([]rune(s))
-	bom := bomUTF16BE
-	if littleEndian {
-		bom = bomUTF16LE
+// eolBytes is the byte sequence that replaces \n for a file's convention.
+func eolBytes(eol string) string {
+	switch eol {
+	case eolCRLF:
+		return "\r\n"
+	case eolCR:
+		return "\r"
 	}
-	out := make([]byte, len(bom)+len(units)*2)
-	copy(out, bom)
-	body := out[len(bom):]
-	for i, u := range units {
-		if littleEndian {
-			binary.LittleEndian.PutUint16(body[i*2:], u)
-		} else {
-			binary.BigEndian.PutUint16(body[i*2:], u)
+	return "\n"
+}
+
+func writeLinesUTF8(w io.Writer, text, eol string, trim bool) error {
+	sep := eolBytes(eol)
+	return eachLine(text, func(line string, hasNewline bool) error {
+		if trim {
+			line = strings.TrimRight(line, " \t")
+		}
+		if _, err := io.WriteString(w, line); err != nil {
+			return err
+		}
+		if !hasNewline {
+			return nil
+		}
+		_, err := io.WriteString(w, sep)
+		return err
+	})
+}
+
+func writeLinesUTF16(w io.Writer, text, eol string, littleEndian, trim bool) error {
+	sep := eolBytes(eol)
+	buf := make([]byte, 0, 4096)
+	return eachLine(text, func(line string, hasNewline bool) error {
+		if trim {
+			line = strings.TrimRight(line, " \t")
+		}
+		var err error
+		if buf, err = writeUTF16(w, line, littleEndian, buf); err != nil {
+			return err
+		}
+		if !hasNewline {
+			return nil
+		}
+		_, err = writeUTF16(w, sep, littleEndian, buf)
+		return err
+	})
+}
+
+// utf16Chunk is how much of a line is encoded before writing, so a single
+// enormous line cannot grow the scratch buffer without bound.
+const utf16Chunk = 2048
+
+// writeUTF16 encodes s into scratch and writes it, in rune-aligned chunks.
+func writeUTF16(w io.Writer, s string, littleEndian bool, scratch []byte) ([]byte, error) {
+	for len(s) > 0 {
+		n := len(s)
+		if n > utf16Chunk {
+			n = utf16Chunk
+			for n > 0 && !utf8.RuneStart(s[n]) {
+				n--
+			}
+			if n == 0 { // defensive: no boundary found, take the chunk as-is
+				n = utf16Chunk
+			}
+		}
+		scratch = appendUTF16(scratch[:0], s[:n], littleEndian)
+		if _, err := w.Write(scratch); err != nil {
+			return scratch, err
+		}
+		s = s[n:]
+	}
+	return scratch, nil
+}
+
+// appendUTF16 appends the UTF-16 encoding of s to dst, matching utf16.Encode:
+// unpaired surrogates and out-of-range runes become U+FFFD.
+//
+// utf16.EncodeRune is deliberately not used for the BMP: what it returns for
+// runes below U+10000 differs between Go releases, so the cases are spelled out
+// here instead.
+func appendUTF16(dst []byte, s string, littleEndian bool) []byte {
+	for _, r := range s {
+		switch {
+		case r < 0xD800, r >= 0xE000 && r < 0x10000:
+			dst = appendUTF16Unit(dst, uint16(r), littleEndian)
+		case r >= 0x10000 && r <= 0x10FFFF:
+			r1, r2 := utf16.EncodeRune(r)
+			dst = appendUTF16Unit(dst, uint16(r1), littleEndian)
+			dst = appendUTF16Unit(dst, uint16(r2), littleEndian)
+		default:
+			dst = appendUTF16Unit(dst, 0xFFFD, littleEndian)
 		}
 	}
-	return out
+	return dst
+}
+
+func appendUTF16Unit(dst []byte, u uint16, littleEndian bool) []byte {
+	if littleEndian {
+		return binary.LittleEndian.AppendUint16(dst, u)
+	}
+	return binary.BigEndian.AppendUint16(dst, u)
 }

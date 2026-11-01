@@ -76,6 +76,7 @@ type Editor struct {
 	dirty       bool
 	loading     bool
 	restoring   bool
+	largeFile   bool
 	wrap        bool
 	trimOnSave  bool
 	autosaveOn  bool
@@ -314,6 +315,9 @@ func (e *Editor) onChanged() {
 // updateStatsForChange keeps typing cheap in large buffers: small files are
 // recounted immediately, big ones once the user pauses.
 func (e *Editor) updateStatsForChange() {
+	if e.largeFile {
+		return
+	}
 	if len(e.entry.Text) <= statsSyncLimit {
 		e.updateStats()
 		return
@@ -332,8 +336,13 @@ func (e *Editor) updateStatsForChange() {
 	})
 }
 
-// updateStats recomputes the cached word/character counts.
+// updateStats recomputes the cached word/character counts. Large-file mode skips
+// it: the scan is O(buffer) and the counts are not shown.
 func (e *Editor) updateStats() {
+	if e.largeFile {
+		e.statChars, e.statWords = 0, 0
+		return
+	}
 	text := e.entry.Text
 	e.statChars = utf8.RuneCountInString(text)
 	e.statWords = countWords(text)
@@ -357,9 +366,15 @@ func (e *Editor) updateInfo() {
 	if e.info == nil || e.entry == nil {
 		return
 	}
-	e.info.SetText(fmt.Sprintf("%d:%d · %dw · %dc · %s · %s%s · %d%%",
-		e.entry.CursorRow+1, e.entry.CursorColumn+1, e.statWords, e.statChars,
-		e.eolLabel(), e.indentLabel(), e.encodingSuffix(), zoomPercent(e.themes.Zoom())))
+	pos := fmt.Sprintf("%d:%d", e.entry.CursorRow+1, e.entry.CursorColumn+1)
+	tail := fmt.Sprintf("%s · %s%s · %d%%", e.eolLabel(), e.indentLabel(),
+		e.encodingSuffix(), zoomPercent(e.themes.Zoom()))
+	if e.largeFile {
+		// No live counts: they would mean rescanning the whole buffer.
+		e.info.SetText(pos + " · " + tail + " · large")
+		return
+	}
+	e.info.SetText(fmt.Sprintf("%s · %dw · %dc · %s", pos, e.statWords, e.statChars, tail))
 }
 
 // encodingSuffix names the file's encoding in the status bar, but only when it
@@ -498,6 +513,10 @@ func (e *Editor) clipboard(sc fyne.Shortcut) {
 
 // ToggleWrap flips word wrapping and persists the choice.
 func (e *Editor) ToggleWrap() {
+	if e.largeFile {
+		e.setStatus("word wrap is off in large-file mode")
+		return
+	}
 	e.wrap = !e.wrap
 	e.app.Preferences().SetBool(prefWrap, e.wrap)
 	e.applyWrap()
@@ -612,13 +631,17 @@ func (e *Editor) applyLineEdit(newText string, row, col int) {
 }
 
 func (e *Editor) applyWrap() {
-	if e.wrap {
+	wrap := e.wrap && !e.largeFile
+	if wrap {
 		e.entry.Wrapping = fyne.TextWrapWord
 	} else {
 		e.entry.Wrapping = fyne.TextWrapOff
 	}
 	if e.wrapItem != nil {
-		e.wrapItem.Checked = e.wrap
+		e.wrapItem.Checked = wrap
+		// Wrapping is what makes Fyne split a large buffer into per-line
+		// segments, so it is not offered in large-file mode.
+		e.wrapItem.Disabled = e.largeFile
 		if menu := e.win.MainMenu(); menu != nil {
 			menu.Refresh()
 		}
