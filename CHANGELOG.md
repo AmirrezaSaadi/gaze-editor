@@ -9,6 +9,10 @@ Releases are published on the
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.3.0] - 2026-11-01
+
 ### Added
 
 - Open size limits. Fyne lays out the whole buffer, so a big enough file used to
@@ -136,7 +140,8 @@ Initial public release.
 - Live status bar
 - Linux, Windows and macOS builds
 
-[Unreleased]: https://github.com/AmirrezaSaadi/gaze-editor/compare/v1.2.3...HEAD
+[Unreleased]: https://github.com/AmirrezaSaadi/gaze-editor/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/AmirrezaSaadi/gaze-editor/compare/v1.2.3...v1.3.0
 [1.2.3]: https://github.com/AmirrezaSaadi/gaze-editor/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/AmirrezaSaadi/gaze-editor/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/AmirrezaSaadi/gaze-editor/compare/v1.2.0...v1.2.1
