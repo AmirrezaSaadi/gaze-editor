@@ -168,7 +168,7 @@ func (e *Editor) ShowFind() {
 // HideFind hides the find & replace bar and returns focus to the editor.
 func (e *Editor) HideFind() {
 	e.findBar.Hide()
-	e.win.Canvas().Focus(e.entry)
+	e.win.Canvas().Focus(e.buffer())
 }
 
 // matcher builds the matcher for the current find-bar state, reporting syntax
@@ -195,8 +195,8 @@ func (e *Editor) FindNext() {
 	}
 	e.recordFind(query)
 
-	text := e.entry.Text
-	start := runeOffset(text, e.entry.CursorRow, e.entry.CursorColumn)
+	text := e.searchText()
+	start := e.caretOffset(text)
 
 	// If the cursor already sits on a match, start after it so "next" advances.
 	from := start
@@ -213,8 +213,9 @@ func (e *Editor) FindNext() {
 		return
 	}
 
-	e.moveCursorTo(idx)
-	e.setStatus(fmt.Sprintf("match at Ln %d, Col %d", e.entry.CursorRow+1, e.entry.CursorColumn+1))
+	e.revealOffset(idx)
+	line, col := e.caretLineCol()
+	e.setStatus(fmt.Sprintf("match at Ln %d, Col %d", line, col))
 }
 
 // ReplaceCurrent replaces the match at the cursor, or advances to the next one.
@@ -230,8 +231,8 @@ func (e *Editor) ReplaceCurrent() {
 	}
 	e.recordFind(query)
 
-	text := e.entry.Text
-	start := runeOffset(text, e.entry.CursorRow, e.entry.CursorColumn)
+	text := e.searchText()
+	start := e.caretOffset(text)
 	n, ok := m.at(text, start)
 	if !ok {
 		e.FindNext()
@@ -239,8 +240,13 @@ func (e *Editor) ReplaceCurrent() {
 	}
 
 	repl := m.expand(text, start, e.replEntry.Text)
-	e.replaceRange(start, n, repl)
-	e.moveCursorTo(start + len(repl))
+	if e.doc != nil {
+		e.editDocument(func() { e.doc.ReplaceRange(start, start+n, repl) })
+		e.refillFromDoc(start + len(repl))
+	} else {
+		e.replaceRange(start, n, repl)
+		e.moveCursorTo(start + len(repl))
+	}
 	e.setStatus("replaced 1 occurrence")
 }
 
@@ -257,19 +263,24 @@ func (e *Editor) ReplaceAll() {
 	}
 	e.recordFind(query)
 
-	text := e.entry.Text
-	at := runeOffset(text, e.entry.CursorRow, e.entry.CursorColumn)
+	text := e.searchText()
+	at := e.caretOffset(text)
 	out, count := m.replaceAll(text, e.replEntry.Text)
 	if count == 0 {
 		e.setStatus("no matches for " + strconv.Quote(query))
 		return
 	}
-	e.replaceRange(0, len(text), out)
 	// Stay where the caret was rather than jumping to the top of the buffer.
 	if at > len(out) {
 		at = len(out)
 	}
-	e.moveCursorTo(at)
+	if e.doc != nil {
+		e.editDocument(func() { e.doc.ReplaceAll(out) })
+		e.refillFromDoc(at)
+	} else {
+		e.replaceRange(0, len(text), out)
+		e.moveCursorTo(at)
+	}
 	e.setStatus(fmt.Sprintf("replaced %d occurrences", count))
 }
 
@@ -371,8 +382,70 @@ func (e *Editor) gotoLine(n int) {
 	e.gotoLineCol(n, 0)
 }
 
+// searchText is the text find and replace work on: the document for a large
+// file, the entry otherwise. Window edits are committed first so a search never
+// misses what was just typed.
+func (e *Editor) searchText() string {
+	if e.doc != nil {
+		e.flushWindow()
+		return e.doc.Text()
+	}
+	return e.entry.Text
+}
+
+// caretOffset is the caret's byte offset into text.
+func (e *Editor) caretOffset(text string) int {
+	if e.doc != nil {
+		return e.doc.LineStart(e.view.top) +
+			runeOffset(e.largeEntry.Text, e.largeEntry.CursorRow, e.largeEntry.CursorColumn)
+	}
+	return runeOffset(text, e.entry.CursorRow, e.entry.CursorColumn)
+}
+
+// editDocument runs a change the editor makes to the document itself (find and
+// replace) and treats it like typing: the buffer becomes dirty and autosave gets
+// a chance to run.
+func (e *Editor) editDocument(change func()) {
+	change()
+	e.dirty = true
+	e.editSeq++
+	e.updateTitle()
+	e.updateInfo()
+	e.maybeAutosave()
+}
+
+// revealOffset makes a document offset visible and puts the caret there.
+func (e *Editor) revealOffset(off int) {
+	if e.doc != nil {
+		e.refillFromDoc(off)
+		return
+	}
+	e.moveCursorTo(off)
+}
+
 // gotoLineCol moves the caret to the 1-based line and (0-based) rune column.
 func (e *Editor) gotoLineCol(line, col int) {
+	if e.doc != nil {
+		e.flushWindow()
+		total := e.doc.LineCount()
+		if line < 1 {
+			line = 1
+		}
+		if line > total {
+			line = total
+		}
+		maxCol := utf8.RuneCountInString(e.doc.LineText(line - 1))
+		if col < 0 {
+			col = 0
+		}
+		if col > maxCol {
+			col = maxCol
+		}
+		e.view.showLine(line-1, col)
+		e.updateInfo()
+		e.setStatus(fmt.Sprintf("line %d of %d", line, total))
+		return
+	}
 	text := e.entry.Text
 	total := lineCount(text)
 	if line < 1 {

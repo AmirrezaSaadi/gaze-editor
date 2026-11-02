@@ -156,14 +156,14 @@ func TestLargeFileModeSkipsSnapshotsAndTrim(t *testing.T) {
 		t.Fatal("large-file mode must not write recovery snapshots")
 	}
 
-	e.entry.CursorRow, e.entry.CursorColumn = 0, 0
+	e.buffer().CursorRow, e.buffer().CursorColumn = 0, 0
 	e.DuplicateLine()
-	if e.entry.Text != "a  \na  \nb" {
-		t.Fatalf("duplicate = %q", e.entry.Text)
+	if e.buffer().Text != "a  \na  \nb" {
+		t.Fatalf("duplicate = %q", e.buffer().Text)
 	}
 	e.Undo()
-	if e.entry.Text != "a  \na  \nb" {
-		t.Fatalf("undo changed a large-file buffer: %q", e.entry.Text)
+	if e.buffer().Text != "a  \na  \nb" {
+		t.Fatalf("undo changed a large-file buffer: %q", e.buffer().Text)
 	}
 
 	e.writeTo(path)

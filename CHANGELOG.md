@@ -11,6 +11,41 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.4.0] - 2026-11-02
+
+Large files are now **editable**, not just openable.
+
+### Added
+
+- Windowed document store (`Document`): the buffer lives in 64 KB pages with a
+  byte-offset line index, so an edit touches only the pages it overlaps and line
+  lookup is a binary search. A 24 MB, 600k-line file opens in ~150 ms with
+  ~5 MB of heap — the same file in `widget.Entry` needs hundreds of MB and
+  minutes of layout.
+- A viewport widget that shows one window of the document (visible lines plus a
+  40-line margin) in a `widget.Entry` and draws its own scrollbar. Scrolling
+  inside the window is a `Move`; the window is refilled only when it runs out.
+  Because the viewport implements `fyne.Scrollable`, Fyne clips it for free.
+- Large-file editing now covers everything: typing, caret movement that follows
+  off either end of the window, go-to-line, indent/outdent, move/duplicate line,
+  find & replace across the whole file, and saving the whole file.
+
+### Changed
+
+- Saving a large-file document streams page by page through the same encoding,
+  line-ending and trim path as a normal save, so it never builds a copy.
+- `finishSave` decides whether the buffer moved on using an edit sequence number
+  instead of comparing strings, which is what makes it work for both modes.
+
+### Fixed
+
+- Refilling the window no longer discards edits that had not reached the document
+  yet: a refill commits the window first.
+- Caret callbacks no longer re-enter the refill (`SetText` moves the caret, which
+  used to refill again).
+- Font zoom and window resizes rebuild the window, so no blank strip appears
+  below the last line and jump targets stay on screen.
+
 ## [1.3.0] - 2026-11-01
 
 ### Added
