@@ -153,10 +153,27 @@ func encodeDocument(s, enc string) []byte {
 	return b.Bytes()
 }
 
+// lineSource calls fn once per line of a document. It lets a save stream either
+// from a string or from the pages of a large document.
+type lineSource func(fn func(line string, hasNewline bool) error) error
+
+// textLines adapts a string to a lineSource.
+func textLines(text string) lineSource {
+	return func(fn func(line string, hasNewline bool) error) error {
+		return eachLine(text, fn)
+	}
+}
+
 // writeDocument streams text to w in enc, translating \n to eol and, when trim is
 // set, stripping spaces and tabs from the end of every line. Lines go through a
 // small buffer, so saving never builds a second copy of the document.
 func writeDocument(w io.Writer, text, eol, enc string, trim bool) error {
+	return writeDocumentLines(w, textLines(text), eol, enc, trim)
+}
+
+// writeDocumentLines is writeDocument over an arbitrary line source, which is how
+// a large document is saved without materialising it.
+func writeDocumentLines(w io.Writer, src lineSource, eol, enc string, trim bool) error {
 	bw := bufio.NewWriterSize(w, 64<<10)
 
 	switch enc {
@@ -177,11 +194,11 @@ func writeDocument(w io.Writer, text, eol, enc string, trim bool) error {
 	var err error
 	switch enc {
 	case encUTF16LE:
-		err = writeLinesUTF16(bw, text, eol, true, trim)
+		err = writeLinesUTF16(bw, src, eol, true, trim)
 	case encUTF16BE:
-		err = writeLinesUTF16(bw, text, eol, false, trim)
+		err = writeLinesUTF16(bw, src, eol, false, trim)
 	default:
-		err = writeLinesUTF8(bw, text, eol, trim)
+		err = writeLinesUTF8(bw, src, eol, trim)
 	}
 	if err != nil {
 		return err
@@ -214,9 +231,9 @@ func eolBytes(eol string) string {
 	return "\n"
 }
 
-func writeLinesUTF8(w io.Writer, text, eol string, trim bool) error {
+func writeLinesUTF8(w io.Writer, src lineSource, eol string, trim bool) error {
 	sep := eolBytes(eol)
-	return eachLine(text, func(line string, hasNewline bool) error {
+	return src(func(line string, hasNewline bool) error {
 		if trim {
 			line = strings.TrimRight(line, " \t")
 		}
@@ -231,10 +248,10 @@ func writeLinesUTF8(w io.Writer, text, eol string, trim bool) error {
 	})
 }
 
-func writeLinesUTF16(w io.Writer, text, eol string, littleEndian, trim bool) error {
+func writeLinesUTF16(w io.Writer, src lineSource, eol string, littleEndian, trim bool) error {
 	sep := eolBytes(eol)
 	buf := make([]byte, 0, 4096)
-	return eachLine(text, func(line string, hasNewline bool) error {
+	return src(func(line string, hasNewline bool) error {
 		if trim {
 			line = strings.TrimRight(line, " \t")
 		}

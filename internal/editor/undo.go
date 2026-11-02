@@ -72,6 +72,11 @@ func (e *Editor) trimUndo() {
 // popUndo restores the previous snapshot, moving the current state onto the
 // redo trail.
 func (e *Editor) popUndo() {
+	if e.largeFile {
+		// Large-file mode keeps no snapshots, so there is nothing here to pop.
+		e.setStatus("nothing to undo")
+		return
+	}
 	n := len(e.undo)
 	if n == 0 {
 		e.setStatus("nothing to undo")
@@ -91,6 +96,10 @@ func (e *Editor) popUndo() {
 
 // popRedo reverses a popUndo.
 func (e *Editor) popRedo() {
+	if e.largeFile {
+		e.setStatus("nothing to redo")
+		return
+	}
 	n := len(e.redo)
 	if n == 0 {
 		e.setStatus("nothing to redo")

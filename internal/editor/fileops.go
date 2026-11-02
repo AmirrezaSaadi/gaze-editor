@@ -173,8 +173,30 @@ func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 		e.enc = encUTF8
 	}
 	e.indentUseTabs, e.indentWidth = detectIndent(text)
-	e.largeFile = mode.large()
 
+	if mode.large() {
+		e.largeFile = true
+		// The document keeps the text as pages; the entry only ever holds a
+		// window of it, so the text is not loaded into the entry at all.
+		e.doc = NewDocument(text)
+		e.windowText, e.windowFrom = "", 0
+		e.loading = true
+		e.entry.SetText("")
+		e.largeEntry.SetText("")
+		e.loading = false
+		e.resetUndo()
+		e.currentFile = path
+		e.dirty = false
+		e.applyOpenMode()
+		e.view.reset()
+		e.refreshChrome()
+		freeMemory(0)
+		return
+	}
+
+	e.largeFile = false
+	e.doc = nil
+	e.windowText, e.windowFrom = "", 0
 	e.loading = true
 	e.entry.SetText(text)
 	e.loading = false
@@ -184,7 +206,7 @@ func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 	e.entry.Refresh()
 	e.currentFile = path
 	e.dirty = false
-	e.applyWrap()
+	e.applyOpenMode()
 	e.refreshChrome()
 	freeMemory(len(text))
 }
@@ -383,25 +405,45 @@ func (e *Editor) SaveFile() {
 // a background goroutine without reading widgets concurrently with editing.
 type saveRequest struct {
 	path    string
-	text    string
+	text    string    // normal mode: the whole buffer
+	doc     *Document // large-file mode: the text is streamed from its pages
 	eol     string
 	enc     string
 	trim    bool
 	prevKey string // recovery key the buffer had before the save
+	seq     uint64 // editSeq when the request was made
 }
 
 // pendingSave snapshots the current buffer and document settings.
 func (e *Editor) pendingSave(path string) saveRequest {
-	return saveRequest{
+	// Anything typed in the window must reach the document before it is written.
+	e.flushWindow()
+	req := saveRequest{
 		path: path,
-		text: e.entry.Text,
 		eol:  e.eol,
 		enc:  e.enc,
 		// Trimming needs a second copy of the buffer to compare against, so it is
 		// skipped entirely in large-file mode.
 		trim:    e.trimOnSave && !e.largeFile,
 		prevKey: e.recoveryKey(),
+		seq:     e.editSeq,
 	}
+	if e.doc != nil {
+		// The write runs on a background goroutine, so it gets its own view of
+		// the pages: editing the window must not change what is being written.
+		req.doc = e.doc.Snapshot()
+	} else {
+		req.text = e.entry.Text
+	}
+	return req
+}
+
+// bytes reports the size of the text the request will write.
+func (r saveRequest) bytes() int {
+	if r.doc != nil {
+		return r.doc.Len()
+	}
+	return len(r.text)
 }
 
 // render produces the bytes for disk and the \n-only buffer they came from:
@@ -426,6 +468,11 @@ func (r saveRequest) render() (out, trimmed string) {
 // actually written.
 func (r saveRequest) write() (trimmed string, err error) {
 	err = writeFileAtomicWith(r.path, func(w io.Writer) error {
+		if r.doc != nil {
+			// Streamed straight from the document's pages: no copy of the file
+			// is built in memory.
+			return writeDocumentLines(w, r.doc.eachLine, r.eol, r.enc, r.trim)
+		}
 		return writeDocument(w, r.text, r.eol, r.enc, r.trim)
 	})
 	if err != nil {
@@ -438,7 +485,7 @@ func (r saveRequest) write() (trimmed string, err error) {
 // Trimming is mirrored back into the editor, so the trimmed text is returned when
 // it is in use.
 func (r saveRequest) bufferAfterWrite() string {
-	if !r.trim {
+	if r.doc != nil || !r.trim {
 		return r.text
 	}
 	return trimTrailingSpace(r.text)
@@ -481,12 +528,13 @@ func (e *Editor) saveAsync(path string) {
 // finishSave installs the results of a successful write. Edits made while the
 // write was in flight are preserved and leave the document dirty.
 func (e *Editor) finishSave(req saveRequest, trimmed string) {
-	sameBuffer := e.entry.Text == req.text
-	if sameBuffer {
+	// The buffer is unchanged if nothing was typed since the request was made.
+	sameBuffer := e.editSeq == req.seq
+	if sameBuffer && req.doc == nil {
 		e.adoptTrimmed(trimmed)
 	}
 	e.currentFile = req.path
-	e.dirty = e.entry.Text != trimmed
+	e.dirty = !sameBuffer
 	e.recordDiskState(req.path)
 	e.refreshChrome()
 	e.addRecent(req.path)
@@ -499,7 +547,7 @@ func (e *Editor) finishSave(req saveRequest, trimmed string) {
 		clearRecovery(req.prevKey)
 	}
 	e.setStatus("saved " + req.path)
-	freeMemory(len(trimmed))
+	freeMemory(req.bytes())
 }
 
 // serialize renders the buffer for disk. It also returns the trimmed \n-only
@@ -718,8 +766,11 @@ func (e *Editor) saveSession(path string) {
 	}
 	p := e.app.Preferences()
 	p.SetString(prefLastFile, path)
-	p.SetInt(prefLastRow, e.entry.CursorRow)
-	p.SetInt(prefLastCol, e.entry.CursorColumn)
+	// Document coordinates, so a large file reopens at the right line rather
+	// than at the top of whichever window happened to be loaded.
+	line, col := e.caretLineCol()
+	p.SetInt(prefLastRow, line-1)
+	p.SetInt(prefLastCol, col-1)
 }
 
 // RestoreSession reopens the file from the previous session (if it still

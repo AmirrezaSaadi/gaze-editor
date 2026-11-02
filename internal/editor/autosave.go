@@ -73,6 +73,11 @@ func (e *Editor) maybeAutosave() {
 // writeRecovery stores the current buffer as a crash-recovery snapshot, streaming
 // it so no second copy of the document is built.
 func (e *Editor) writeRecovery() {
+	if e.largeFile {
+		// Only a window of the document is in the entry, so a snapshot would be
+		// a truncated file masquerading as a recovery copy.
+		return
+	}
 	p := recoveryPath(e.recoveryKey())
 	if p == "" {
 		return
@@ -91,6 +96,9 @@ func (e *Editor) writeRecovery() {
 // fsync and rename in writeFileAtomic are fast but not free, and this runs while
 // the user is typing.
 func (e *Editor) writeRecoveryAsync() {
+	if e.largeFile {
+		return
+	}
 	p := recoveryPath(e.recoveryKey())
 	if p == "" {
 		return

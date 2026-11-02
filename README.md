@@ -19,16 +19,20 @@ day-to-day features you actually reach for — no plugin system, no bloat.
   preserving permissions (and symlinks) so a crash cannot truncate your file
 - **Autosave recovery** — dirty buffers are snapshotted to the cache dir and
   offered back after a crash, untitled buffers included
-- **Large-file guard** — over 16 MiB Gaze asks first and drops the chrome that
-  copies the buffer (wrap, live counts, undo snapshots, recovery); over 256 MiB it
-  refuses instead of exhausting memory
+- **Large files are editable** — over 16 MiB Gaze asks first and switches to a
+  windowed document: a 64 KB page store plus a line index behind one screen of
+  text, so a 24 MB / 600k-line file opens in ~150 ms using a few MB of heap
+  instead of exhausting memory. Scrolling, typing, go-to-line, find/replace and
+  saving all work; word wrap, live counts, per-keystroke undo and recovery
+  snapshots are off. Over 256 MiB it still refuses
 - **Save guard** — a save warns when the file was changed on disk since it was
   opened, rather than overwriting it silently
 - **Session restore** — reopen the last file and caret position on a bare launch
 - **Drag & drop** a file onto the window to open it
 - **Recent files** — persisted list (max 10) under *File → Open Recent*
 - **Find & replace** — next with wrap-around, match-case, **regex** (with `$1`
-  capture groups), and a persisted **search history** (`Alt+Up` / `Alt+Down`)
+  capture groups), and a persisted **search history** (`Alt+Up` / `Alt+Down`);
+  works across a whole large file, not just the visible window
 - **Go to line** — jump straight to a line number, or `file:line:col` on the CLI
 - **Line operations** — indent/outdent, move line up/down, duplicate line
 - **Trim trailing whitespace on save** (optional, persisted)
@@ -126,6 +130,10 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
 ## Size & memory notes
 
 - No duplicate buffer: dirty state is a flag, not a second copy of the file.
+- Files over 16 MiB are held as a **windowed document**: the text lives in 64 KB
+  pages with a byte-offset line index, and `widget.Entry` only ever holds the
+  lines on and around the screen (~114 lines, ~5 KB). Scrolling inside that
+  window is a move; refilling it costs ~25 ms.
 - File loads stream through a `strings.Builder` and saves stream the string
   straight to disk, avoiding full-size `[]byte` round-trips.
 - `runtime/debug.FreeOSMemory` runs after open/save so the resident set does
@@ -136,10 +144,17 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
 
 ## Known limitations (Fyne)
 
-- **Large files are capped, not virtualised.** `widget.Entry` lays out the whole
-  buffer, so Gaze opens files over 16 MiB in a degraded mode and refuses anything
-  over 256 MiB rather than running out of memory. Editing genuinely large files
-  needs a windowed buffer, which the widget cannot provide.
+- **Large-file mode has edges.** `widget.Entry` can only hold a string, so a
+  large document is swapped into the entry one window at a time. That leaves four
+  things to know: find/replace materialises the file once per command (it needs
+  the whole text for `^`/`$` and `$1`), *select all* selects the current window,
+  undo/redo only reaches back through the window that is loaded, and the caret
+  cannot be *selected across* a refill. Everything else — scrolling, typing,
+  go-to-line, line operations, save — works on the whole file.
+- **Refills are the scroll hiccup.** Crossing the window (every ~40 lines of
+  margin) rebuilds ~114 lines of entry text, about 25 ms on a 24 MB file. Wheel
+  and trackpad scrolling inside the window is free.
+- Files over 256 MiB are refused rather than loaded.
 - `widget.Entry` exposes no range-edit API, so **find/replace and the line
   operations rebuild the buffer via `SetText`**. Gaze snapshots the buffer
   around those rewrites so they stay undoable, but the rewrite clears Entry's
