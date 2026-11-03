@@ -643,10 +643,6 @@ func (e *Editor) clipboard(sc fyne.Shortcut) {
 
 // ToggleWrap flips word wrapping and persists the choice.
 func (e *Editor) ToggleWrap() {
-	if e.largeFile {
-		e.setStatus("word wrap is off in large-file mode")
-		return
-	}
 	e.wrap = !e.wrap
 	e.app.Preferences().SetBool(prefWrap, e.wrap)
 	e.applyWrap()
@@ -793,11 +789,13 @@ func (e *Editor) applyWrap() {
 	} else {
 		e.entry.Wrapping = fyne.TextWrapOff
 	}
+	if e.code != nil {
+		// The code view wraps itself: it splits a line into visual rows of the
+		// width that fits, so a large file can be wrapped too.
+		e.code.setWrap(e.wrap)
+	}
 	if e.wrapItem != nil {
-		e.wrapItem.Checked = wrap
-		// Wrapping is what makes Fyne split a large buffer into per-line
-		// segments, so it is not offered in large-file mode.
-		e.wrapItem.Disabled = e.largeFile
+		e.wrapItem.Checked = e.wrap
 		if menu := e.win.MainMenu(); menu != nil {
 			menu.Refresh()
 		}

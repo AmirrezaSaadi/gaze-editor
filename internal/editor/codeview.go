@@ -2,6 +2,7 @@ package editor
 
 import (
 	"math"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -63,8 +64,14 @@ type codeView struct {
 	ed  *Editor
 	doc *Document
 
-	top      int // first visible document row
-	xoffCell int // first visible cell (horizontal scroll)
+	topRow   int  // first visible visual row (wrap-aware; == document row without wrap)
+	xoffCell int  // first visible cell, only used when wrap is off
+	wrap     bool // soft-wrap long lines instead of scrolling sideways
+
+	// rows is the cumulative visual row index per document line, built only while
+	// wrapping: rows[i] is the first visual row of line i, rows[n] the total.
+	rows      []int
+	rowsCells int // wrap width the index was built for
 
 	caret  pos
 	anchor pos
@@ -110,10 +117,41 @@ func (v *codeView) CreateRenderer() fyne.WidgetRenderer {
 // setDoc installs a document and puts the view back at the top.
 func (v *codeView) setDoc(d *Document) {
 	v.doc = d
-	v.top, v.xoffCell = 0, 0
+	v.topRow, v.xoffCell = 0, 0
 	v.caret, v.anchor = pos{}, pos{}
 	v.undo, v.redo = nil, nil
 	v.undoBytes = 0
+	v.rows = nil
+	v.rebuildRows()
+	v.render()
+}
+
+// setWrap turns soft wrapping on or off and keeps the view on the same text.
+func (v *codeView) setWrap(on bool) {
+	if v.wrap == on {
+		return
+	}
+	// Remember where the top of the view is so toggling does not jump.
+	row, chunk := v.rowOf(v.topRow)
+	v.wrap = on
+	v.xoffCell = 0
+	if on {
+		v.rebuildRows()
+	} else {
+		v.rows = nil
+	}
+	v.topRow = v.rowStart(row)
+	if !on {
+		v.topRow = row
+	} else {
+		v.topRow += chunk
+	}
+	if last := max(0, v.totalRows()-v.visibleLines()); v.topRow > last {
+		v.topRow = last
+	}
+	if v.topRow < 0 {
+		v.topRow = 0
+	}
 	v.render()
 }
 
@@ -162,6 +200,237 @@ func (v *codeView) visibleCells() int {
 		return 1
 	}
 	return n
+}
+
+// wrapCells is how many character cells fit on one visual row.
+func (v *codeView) wrapCells() int {
+	if n := v.visibleCells(); n > 0 {
+		return n
+	}
+	return 1
+}
+
+// cellsOf is the display width of a document line, with tabs expanded.
+func (v *codeView) cellsOf(row int) int {
+	cells := 0
+	for _, r := range v.doc.LineText(row) {
+		if r == '\t' {
+			cells += v.ed.indentWidth - cells%v.ed.indentWidth
+		} else {
+			cells++
+		}
+	}
+	return cells
+}
+
+// wrapScan walks a line and reports the cell each visual row starts at, breaking
+// after the last space that fits so words stay whole (a word longer than the
+// window is still split). It returns the number of rows; when sink is nil it only
+// counts, which is what keeps a full index pass allocation-free.
+func (v *codeView) wrapScan(row int, sink func(cell int)) int {
+	if sink != nil {
+		sink(0)
+	}
+	if !v.wrap {
+		return 1
+	}
+	maxW := v.wrapCells()
+	count := 1
+	cell, rowStart, lastSpace := 0, 0, -1
+	for _, r := range v.doc.LineText(row) {
+		w := 1
+		if r == '\t' {
+			w = v.ed.indentWidth - cell%v.ed.indentWidth
+		}
+		if cell+w > rowStart+maxW {
+			if lastSpace > rowStart {
+				rowStart = lastSpace + 1
+			} else {
+				rowStart = cell
+			}
+			count++
+			if sink != nil {
+				sink(rowStart)
+			}
+			lastSpace = -1
+		}
+		if r == ' ' && cell >= rowStart {
+			lastSpace = cell
+		}
+		cell += w
+	}
+	return count
+}
+
+// chunksOf is how many visual rows a document line occupies.
+func (v *codeView) chunksOf(row int) int { return v.wrapScan(row, nil) }
+
+// wrapStarts is the cell each visual row of a line starts at.
+func (v *codeView) wrapStarts(row int) []int {
+	starts := make([]int, 0, 4)
+	v.wrapScan(row, func(cell int) { starts = append(starts, cell) })
+	return starts
+}
+
+// chunkAt is the visual row a cell of a line falls on.
+func (v *codeView) chunkAt(row, cell int) int {
+	if !v.wrap {
+		return 0
+	}
+	chunk, idx := 0, -1
+	v.wrapScan(row, func(start int) {
+		idx++
+		if cell >= start {
+			chunk = idx
+		}
+	})
+	return chunk
+}
+
+// totalRows is the number of visual rows in the document.
+func (v *codeView) totalRows() int {
+	if !v.wrap || len(v.rows) == 0 {
+		return v.docLines()
+	}
+	return v.rows[len(v.rows)-1]
+}
+
+// rowOf maps a visual row to the document line and wrap chunk it starts.
+func (v *codeView) rowOf(g int) (row, chunk int) {
+	if !v.wrap || len(v.rows) == 0 {
+		if g < 0 {
+			g = 0
+		}
+		if g >= v.docLines() {
+			g = v.docLines() - 1
+		}
+		return g, 0
+	}
+	if g < 0 {
+		g = 0
+	}
+	if last := v.totalRows() - 1; g > last {
+		g = last
+	}
+	row = sort.SearchInts(v.rows, g+1) - 1
+	if row < 0 {
+		row = 0
+	}
+	if row >= len(v.rows)-1 {
+		row = len(v.rows) - 2
+	}
+	return row, g - v.rows[row]
+}
+
+// rowStart is the visual row a document line starts at.
+func (v *codeView) rowStart(row int) int {
+	if !v.wrap || len(v.rows) == 0 {
+		return row
+	}
+	if row <= 0 {
+		return 0
+	}
+	if row >= len(v.rows) {
+		return v.totalRows()
+	}
+	return v.rows[row]
+}
+
+// caretChunk is the wrap chunk of its line the caret sits on.
+func (v *codeView) caretChunk() int {
+	if !v.wrap {
+		return 0
+	}
+	c := v.chunkAt(v.caret.row, v.cellOf(v.caret))
+	if n := v.chunksOf(v.caret.row); c >= n {
+		c = n - 1
+	}
+	if c < 0 {
+		c = 0
+	}
+	return c
+}
+
+// caretRow is the visual row of the caret.
+func (v *codeView) caretRow() int { return v.rowStart(v.caret.row) + v.caretChunk() }
+
+// rebuildRows recomputes the visual row index; only used while wrapping.
+func (v *codeView) rebuildRows() {
+	if !v.wrap || v.doc == nil {
+		v.rows = nil
+		return
+	}
+	n := v.doc.LineCount()
+	rows := make([]int, n+1)
+	total := 0
+	for i := 0; i < n; i++ {
+		rows[i] = total
+		total += v.chunksOf(i)
+	}
+	rows[n] = total
+	v.rows = rows
+	v.rowsCells = v.wrapCells()
+}
+
+// patchRows updates the visual row index after the lines [r0, r0+oldLines) were
+// replaced by newLines lines. Typing keeps the line count, so the common case is
+// an in-place shift of the totals below the edit.
+func (v *codeView) patchRows(r0, oldLines, newLines int) {
+	if !v.wrap || v.doc == nil {
+		return
+	}
+	n := v.doc.LineCount()
+	if len(v.rows) != n+1 || v.rowsCells != v.wrapCells() || oldLines > 2000 || newLines > 2000 {
+		v.rebuildRows()
+		return
+	}
+	if r0 < 0 {
+		r0 = 0
+	}
+	if r0+oldLines > n {
+		v.rebuildRows()
+		return
+	}
+	oldEnd := v.rows[r0+oldLines]
+	if newLines == oldLines {
+		acc := v.rows[r0]
+		for k := 1; k <= newLines; k++ {
+			acc += v.chunksOf(r0 + k - 1)
+			v.rows[r0+k] = acc
+		}
+		if delta := acc - oldEnd; delta != 0 {
+			for i := r0 + oldLines + 1; i < len(v.rows); i++ {
+				v.rows[i] += delta
+			}
+		}
+		return
+	}
+
+	// A line was added or removed: splice the totals.
+	out := make([]int, n+1)
+	copy(out, v.rows[:r0+1])
+	acc := v.rows[r0]
+	for k := 1; k <= newLines; k++ {
+		acc += v.chunksOf(r0 + k - 1)
+		out[r0+k] = acc
+	}
+	delta := acc - oldEnd
+	for i := r0 + oldLines + 1; i <= n; i++ {
+		out[i-oldLines+newLines] = v.rows[i] + delta
+	}
+	v.rows = out
+}
+
+// applyReplace changes the document and keeps the visual row index in step.
+func (v *codeView) applyReplace(off int, del, ins string) {
+	r0 := 0
+	if v.wrap && v.doc != nil {
+		r0, _ = v.doc.RowColOf(off)
+	}
+	v.doc.ReplaceRange(off, off+len(del), ins)
+	if v.wrap {
+		v.patchRows(r0, strings.Count(del, "\n"), strings.Count(ins, "\n"))
+	}
 }
 
 // docLines is the number of lines in the document.
@@ -268,7 +537,7 @@ func (v *codeView) edit(off int, del string, ins string, merge bool) {
 				time.Since(last.at) < time.Second {
 				last.ins += ins
 				last.at = time.Now()
-				v.doc.ReplaceRange(off, off, ins)
+				v.applyReplace(off, "", ins)
 				// The run now ends at the end of the merged text, not after off.
 				last.after = v.posAt(last.off + len(last.ins))
 				v.afterEdit(last.after)
@@ -276,7 +545,7 @@ func (v *codeView) edit(off int, del string, ins string, merge bool) {
 			}
 		}
 	}
-	v.doc.ReplaceRange(off, off+len(del), ins)
+	v.applyReplace(off, del, ins)
 	e := docEdit{off: off, old: del, ins: ins, caret: before, after: v.posAt(off + len(ins)), at: time.Now()}
 	v.undo = append(v.undo, e)
 	v.undoBytes += len(del) + len(ins)
@@ -287,7 +556,7 @@ func (v *codeView) edit(off int, del string, ins string, merge bool) {
 
 // rawEdit applies a change and records it, leaving the caret to the caller.
 func (v *codeView) rawEdit(off int, del, ins string) {
-	v.doc.ReplaceRange(off, off+len(del), ins)
+	v.applyReplace(off, del, ins)
 	v.undo = append(v.undo, docEdit{
 		off: off, old: del, ins: ins,
 		caret: v.caret, after: v.caret, at: time.Now(),
@@ -502,7 +771,7 @@ func (v *codeView) Undo() {
 	e := v.undo[n-1]
 	v.undo = v.undo[:n-1]
 	v.undoBytes -= len(e.old) + len(e.ins)
-	v.doc.ReplaceRange(e.off, e.off+len(e.ins), e.old)
+	v.applyReplace(e.off, e.ins, e.old)
 	v.redo = append(v.redo, e)
 	v.caret, v.anchor = e.caret, e.caret
 	v.followCaret()
@@ -519,7 +788,7 @@ func (v *codeView) Redo() {
 	}
 	e := v.redo[n-1]
 	v.redo = v.redo[:n-1]
-	v.doc.ReplaceRange(e.off, e.off+len(e.old), e.ins)
+	v.applyReplace(e.off, e.old, e.ins)
 	v.undo = append(v.undo, e)
 	v.undoBytes += len(e.old) + len(e.ins)
 	v.caret, v.anchor = e.after, e.after
@@ -639,17 +908,22 @@ func (v *codeView) wordEdge(dir int, extend bool) {
 // followCaret scrolls the document so the caret is visible.
 func (v *codeView) followCaret() {
 	vis := v.visibleLines()
-	if v.caret.row < v.top {
-		v.top = v.caret.row
+	cg := v.caretRow()
+	if cg < v.topRow {
+		v.topRow = cg
 	}
-	if v.caret.row >= v.top+vis {
-		v.top = v.caret.row - vis + 1
+	if cg >= v.topRow+vis {
+		v.topRow = cg - vis + 1
 	}
-	if max := v.docLines() - vis; v.top > max {
-		v.top = max
+	if max := v.totalRows() - vis; v.topRow > max {
+		v.topRow = max
 	}
-	if v.top < 0 {
-		v.top = 0
+	if v.topRow < 0 {
+		v.topRow = 0
+	}
+	if v.wrap {
+		v.xoffCell = 0
+		return
 	}
 
 	cell := v.cellOf(v.caret)
@@ -671,16 +945,16 @@ func (v *codeView) scrollLines(delta int) {
 		return
 	}
 	vis := v.visibleLines()
-	max := v.docLines() - vis
+	max := v.totalRows() - vis
 	if max < 0 {
 		max = 0
 	}
-	v.top += delta
-	if v.top > max {
-		v.top = max
+	v.topRow += delta
+	if v.topRow > max {
+		v.topRow = max
 	}
-	if v.top < 0 {
-		v.top = 0
+	if v.topRow < 0 {
+		v.topRow = 0
 	}
 	v.render()
 }
@@ -775,14 +1049,23 @@ func (v *codeView) posAtPoint(p fyne.Position) pos {
 	if lineH <= 0 || charW <= 0 {
 		return v.caret
 	}
-	row := v.top + int((p.Y-v.inset())/lineH)
-	cell := v.xoffCell + int(math.Round(float64((p.X-v.inset())/charW)))
+	g := v.topRow + int((p.Y-v.inset())/lineH)
 	// A click in the padding above or below the text still lands on a line.
-	if row < v.top {
-		row = v.top
+	if g < v.topRow {
+		g = v.topRow
 	}
-	if last := v.top + v.visibleLines() - 1; row > last {
-		row = last
+	if last := v.topRow + v.visibleLines() - 1; g > last {
+		g = last
+	}
+	row, chunk := v.rowOf(g)
+	cell := v.xoffCell + int(math.Round(float64((p.X-v.inset())/charW)))
+	if v.wrap {
+		if starts := v.wrapStarts(row); len(starts) > 0 {
+			if chunk >= len(starts) {
+				chunk = len(starts) - 1
+			}
+			cell = starts[chunk] + int(math.Round(float64((p.X-v.inset())/charW)))
+		}
 	}
 	return pos{row: row, col: v.colAtCell(row, cell)}
 }
@@ -814,7 +1097,7 @@ func (v *codeView) MinSize() fyne.Size {
 // Scrolled moves the view with the wheel; Fyne also treats a Scrollable as a
 // clip region, which is what keeps the lines out of the scrollbar gutter.
 func (v *codeView) Scrolled(ev *fyne.ScrollEvent) {
-	if ev.Scrolled.DY == 0 && ev.Scrolled.DX != 0 {
+	if ev.Scrolled.DY == 0 && ev.Scrolled.DX != 0 && !v.wrap {
 		_, charW := v.metrics()
 		if charW > 0 {
 			v.xoffCell -= int(ev.Scrolled.DX / charW)
@@ -1085,24 +1368,24 @@ func (v *codeView) dragToBar(y float32) {
 	if span <= 0 {
 		return
 	}
-	max := v.docLines() - v.visibleLines()
+	max := v.totalRows() - v.visibleLines()
 	if max <= 0 {
 		return
 	}
 	top := int(float32(max) * (y - v.thumbHeight()/2) / span)
-	v.top = top
-	if v.top > max {
-		v.top = max
+	if top > max {
+		top = max
 	}
-	if v.top < 0 {
-		v.top = 0
+	if top < 0 {
+		top = 0
 	}
+	v.topRow = top
 	v.render()
 }
 
 // thumbHeight is how tall the scrollbar thumb is drawn.
 func (v *codeView) thumbHeight() float32 {
-	total := float32(v.docLines())
+	total := float32(v.totalRows())
 	vis := float32(v.visibleLines())
 	h := v.Size().Height * vis / total
 	if h < minThumbHeight {
@@ -1194,6 +1477,12 @@ func (r *codeRenderer) sync() {
 	if lineH <= 0 || charW <= 0 {
 		return
 	}
+	// The row index only exists while wrapping; rebuild it when the width or the
+	// document changed under us (a find/replace elsewhere, say).
+	if v.wrap && (v.rowsCells != v.wrapCells() || len(v.rows) != v.docLines()+1) {
+		v.rebuildRows()
+	}
+
 	vis := v.visibleLines()
 	r.ensure(vis + 1)
 
@@ -1202,19 +1491,41 @@ func (r *codeRenderer) sync() {
 	v.bg.Move(fyne.NewPos(0, 0))
 	v.bg.Resize(v.Size())
 
+	total := v.totalRows()
+	poolRow, poolStarts := -1, []int(nil)
+	rowStartsFor := func(row int) []int {
+		if row != poolRow {
+			poolRow, poolStarts = row, v.wrapStarts(row)
+		}
+		return poolStarts
+	}
 	for i, t := range v.texts {
-		row := v.top + i
-		if i >= vis || row >= v.docLines() {
+		g := v.topRow + i
+		if i >= vis || g >= total {
 			t.Hide()
 			continue
 		}
 		t.Show()
-		text, startCell, _ := v.lineDisplay(row, v.xoffCell, v.visibleCells()+1)
+		row, chunk := v.rowOf(g)
+		from, limit := v.xoffCell, v.visibleCells()+1
+		if v.wrap {
+			starts := rowStartsFor(row)
+			if chunk >= len(starts) {
+				chunk = len(starts) - 1
+			}
+			from = starts[chunk]
+			// A wrapped row ends where the next one begins, not at the window
+			// edge: drawing past that would show the start of the next row.
+			if chunk+1 < len(starts) {
+				limit = starts[chunk+1] - from
+			}
+		}
+		text, startCell, _ := v.lineDisplay(row, from, limit)
 		if t.Text != text {
 			t.Text = text
 			t.Refresh()
 		}
-		at := fyne.NewPos(inset+float32(startCell-v.xoffCell)*charW, inset+float32(i)*lineH)
+		at := fyne.NewPos(inset+float32(startCell-from)*charW, inset+float32(i)*lineH)
 		if t.Position() != at {
 			t.Move(at)
 		}
@@ -1233,13 +1544,13 @@ func (r *codeRenderer) sync() {
 	trackX := size.Width - barW
 	v.track.Move(fyne.NewPos(trackX, 0))
 	v.track.Resize(fyne.NewSize(barW, size.Height))
-	if v.docLines() <= vis {
+	if v.totalRows() <= vis {
 		v.thumb.Hide()
 	} else {
 		v.thumb.Show()
 		h := v.thumbHeight()
-		max := float32(v.docLines() - vis)
-		y := (size.Height - h) * float32(v.top) / max
+		max := float32(v.totalRows() - vis)
+		y := (size.Height - h) * float32(v.topRow) / max
 		v.thumb.Move(fyne.NewPos(trackX, y))
 		v.thumb.Resize(fyne.NewSize(barW, h))
 	}
@@ -1255,9 +1566,21 @@ func (r *codeRenderer) syncSelection(vis int, lineH, charW, inset float32) {
 	if !ok {
 		return
 	}
+	total := v.totalRows()
+	selRow, selStarts := -1, []int(nil)
+	startsFor := func(row int) []int {
+		if row != selRow {
+			selRow, selStarts = row, v.wrapStarts(row)
+		}
+		return selStarts
+	}
 	for i := 0; i < vis; i++ {
-		row := v.top + i
-		if row < from.row || row > to.row || row >= v.docLines() {
+		g := v.topRow + i
+		if g >= total {
+			continue
+		}
+		row, chunk := v.rowOf(g)
+		if row < from.row || row > to.row {
 			continue
 		}
 		startCol := 0
@@ -1268,17 +1591,39 @@ func (r *codeRenderer) syncSelection(vis int, lineH, charW, inset float32) {
 		if row == to.row {
 			endCol = to.col
 		}
+		lineCells := v.cellOf(pos{row: row, col: v.lineLen(row)})
 		startCell := v.cellOf(pos{row: row, col: startCol})
 		endCell := v.cellOf(pos{row: row, col: min(endCol, v.lineLen(row))})
 		if endCol > v.lineLen(row) {
 			endCell++ // the newline cell
+		}
+		// Clip the highlight to the piece of the line this visual row shows.
+		lo, hi := v.xoffCell, v.xoffCell+v.visibleCells()
+		if v.wrap {
+			starts := startsFor(row)
+			if chunk >= len(starts) {
+				chunk = len(starts) - 1
+			}
+			lo = starts[chunk]
+			if chunk+1 < len(starts) {
+				hi = starts[chunk+1]
+			} else {
+				hi = lineCells + 1
+			}
+		}
+		_ = lineCells
+		if startCell < lo {
+			startCell = lo
+		}
+		if endCell > hi {
+			endCell = hi
 		}
 		if endCell <= startCell {
 			continue
 		}
 		rect := v.sels[i]
 		rect.Show()
-		x := inset + float32(startCell-v.xoffCell)*charW
+		x := inset + float32(startCell-lo)*charW
 		rect.Move(fyne.NewPos(x, inset+float32(i)*lineH))
 		rect.Resize(fyne.NewSize(float32(endCell-startCell)*charW, lineH))
 	}
@@ -1292,9 +1637,20 @@ func (r *codeRenderer) syncCaret(lineH, charW, inset float32) {
 		return
 	}
 	cell := v.cellOf(v.caret)
-	x := inset + float32(cell-v.xoffCell)*charW
-	y := inset + float32(v.caret.row-v.top)*lineH
-	if v.caret.row < v.top || v.caret.row >= v.top+v.visibleLines() {
+	origin := v.xoffCell
+	if v.wrap {
+		if starts := v.wrapStarts(v.caret.row); len(starts) > 0 {
+			c := v.caretChunk()
+			if c >= len(starts) {
+				c = len(starts) - 1
+			}
+			origin = starts[c]
+		}
+	}
+	x := inset + float32(cell-origin)*charW
+	g := v.caretRow()
+	y := inset + float32(g-v.topRow)*lineH
+	if g < v.topRow || g >= v.topRow+v.visibleLines() {
 		v.caretRect.Hide()
 		return
 	}
