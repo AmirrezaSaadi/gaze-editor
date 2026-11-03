@@ -106,7 +106,7 @@ func (e *Editor) confirmOpenSize(name string, size int64, proceed func(openMode)
 		e.reportTooLarge(name, size)
 	case size >= LargeFileBytes:
 		dialog.ShowConfirm("Open large file?",
-			fmt.Sprintf("%s is %s.\n\nGaze can open it in large-file mode, which turns off word wrap, live word and character counts, undo snapshots and crash recovery so the whole buffer is not copied or rescanned. Continue?",
+			fmt.Sprintf("%s is %s.\n\nGaze can open it in large-file mode, which skips the live word and character counts and the save-time trim so the whole buffer is not rescanned or copied, and keeps only a short undo history. Continue?",
 				name, humanBytes(size)),
 			func(ok bool) {
 				if !ok {
@@ -128,7 +128,7 @@ func (e *Editor) reportTooLarge(name string, size int64) {
 		detail = fmt.Sprintf("%s is %s, over Gaze's %s limit.", name, humanBytes(size), humanBytes(MaxOpenBytes))
 	}
 	dialog.ShowInformation("File too large",
-		detail+"\n\nFyne lays out the whole buffer, so opening it would need several gigabytes of memory and the window would stop responding. A tool built for huge files (less, grep, or an editor with a windowed buffer) is a better fit.",
+		detail+"\n\nGaze keeps the document in memory and indexes every line, so past this size the index alone would cost more than the window can spare. A tool built for huge files (less, grep, or an editor that memory-maps them) is a better fit.",
 		e.win)
 	e.setStatus("refused " + name + " — too large (over " + humanBytes(MaxOpenBytes) + ")")
 }
@@ -152,9 +152,9 @@ func (e *Editor) SetContent(text, path string) {
 	e.setContent(text, path, encUTF8)
 }
 
-// SetContentLarge loads text as a large-file buffer: the chrome that duplicates
-// or rescans the document (word wrap, live counts, undo snapshots, crash
-// recovery) is switched off.
+// SetContentLarge loads text as a large-file buffer: the chrome that rescans or
+// copies the document (live counts, the save-time trim, a long undo history) is
+// switched off.
 func (e *Editor) SetContentLarge(text, path string) {
 	e.setContentAs(text, path, encUTF8, openLarge)
 }

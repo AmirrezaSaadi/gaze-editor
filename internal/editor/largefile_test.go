@@ -138,23 +138,15 @@ func TestLargeFileModeShedsCopyingChrome(t *testing.T) {
 	}
 }
 
-// Snapshots, recovery copies and the trim rewrite are all skipped, because each
-// one holds or builds a second copy of the buffer.
-func TestLargeFileModeSkipsSnapshotsAndTrim(t *testing.T) {
+// The trim rewrite is skipped in large-file mode, because mirroring it back into
+// the buffer would build a second copy of the document.
+func TestLargeFileModeSkipsTrim(t *testing.T) {
 	isolatedRecovery(t)
 	path := filepath.Join(t.TempDir(), "big.txt")
 
 	e := newTestEditor(t)
 	e.setContentAs("a  \nb", path, encUTF8, openLarge)
-	e.autosaveOn = true
 	e.trimOnSave = true
-	e.dirty = true
-	e.lastAutosave = time.Time{}
-
-	e.maybeAutosave()
-	if _, ok := recoveryFor(path); ok {
-		t.Fatal("large-file mode must not write recovery snapshots")
-	}
 
 	e.code.setCaret(pos{})
 	e.DuplicateLine()
@@ -175,6 +167,69 @@ func TestLargeFileModeSkipsSnapshotsAndTrim(t *testing.T) {
 	}
 	if string(data) != "a  \na  \nb" {
 		t.Fatalf("file = %q, want trailing spaces kept (no trim in large-file mode)", data)
+	}
+}
+
+// A large document is snapshotted for recovery too, streamed from the page store
+// rather than copied whole.
+func TestLargeFileWritesRecoverySnapshot(t *testing.T) {
+	isolatedRecovery(t)
+	path := filepath.Join(t.TempDir(), "big.txt")
+
+	e := newTestEditor(t)
+	want := codeText(20000)
+	e.setContentAs(want, path, encUTF8, openLarge)
+	e.autosaveOn = true
+	e.dirty = true
+	e.lastAutosave = time.Time{}
+
+	e.maybeAutosave()
+	waitFor(t, "the large document snapshot", func() bool {
+		_, ok := recoveryFor(path)
+		return ok
+	})
+
+	got, ok := recoveryFor(path)
+	if !ok {
+		t.Fatal("no recovery snapshot was written for the large document")
+	}
+	if got != want {
+		t.Fatalf("snapshot is %d bytes, want %d", len(got), len(want))
+	}
+}
+
+// Snapshots of a big document are spaced further apart than a small one's.
+func TestLargeFileAutosaveIsRarer(t *testing.T) {
+	isolatedRecovery(t)
+	path := filepath.Join(t.TempDir(), "big.txt")
+
+	e := newTestEditor(t)
+	e.setContentAs("a", path, encUTF8, openNormal)
+	if got := e.autosaveEvery(); got != 30*time.Second {
+		t.Fatalf("small-file interval = %v", got)
+	}
+
+	e.setContentAs("a", path, encUTF8, openLarge)
+	if got := e.autosaveEvery(); got != 2*time.Minute {
+		t.Fatalf("large-file interval = %v", got)
+	}
+
+	// The throttle honours it: a snapshot written a minute ago is too recent for
+	// a large document but due for a small one.
+	e.autosaveOn = true
+	e.dirty = true
+	stale := time.Now().Add(-time.Minute)
+	e.lastAutosave = stale
+	e.maybeAutosave()
+	if e.lastAutosave != stale {
+		t.Fatal("a large document should not be snapshotted again after a minute")
+	}
+	e.setContentAs("a", path, encUTF8, openNormal)
+	e.dirty = true
+	e.lastAutosave = stale
+	e.maybeAutosave()
+	if e.lastAutosave == stale {
+		t.Fatal("a small document should be snapshotted after a minute")
 	}
 }
 

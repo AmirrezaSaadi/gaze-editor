@@ -14,6 +14,11 @@ import (
 // autosaveInterval throttles recovery snapshots to at most one per interval.
 const autosaveInterval = 30 * time.Second
 
+// largeAutosaveInterval is the same throttle for a large document. The snapshot
+// itself is streamed from the page store, but writing tens of megabytes is still
+// disk traffic worth spacing out.
+const largeAutosaveInterval = 2 * time.Minute
+
 // draftKey is the recovery key for a buffer that has no file yet. A session
 // edits one document at a time, so a single slot is enough to survive a crash.
 const draftKey = "untitled"
@@ -53,39 +58,51 @@ func recoveryPath(key string) string {
 	return filepath.Join(dir, "r"+strconv.FormatUint(h.Sum64(), 16)+".gaze")
 }
 
-// maybeAutosave writes a recovery snapshot of the dirty buffer, rate-limited to
-// autosaveInterval so it can be called on every keystroke. Untitled buffers are
-// included: they have no other copy anywhere, so they need this most. Large-file
-// mode opts out — a snapshot is a copy of the whole document written every 30
-// seconds, which is the cost this mode exists to avoid.
+// autosaveEvery is how often a dirty buffer may be snapshotted, which depends on
+// how big it is.
+func (e *Editor) autosaveEvery() time.Duration {
+	if e.largeFile {
+		return largeAutosaveInterval
+	}
+	return autosaveInterval
+}
+
+// maybeAutosave writes a recovery snapshot of the dirty buffer, rate-limited so
+// it can be called on every keystroke. Untitled buffers are included: they have
+// no other copy anywhere, so they need this most.
 func (e *Editor) maybeAutosave() {
-	if !e.autosaveOn || !e.dirty || e.largeFile {
+	if !e.autosaveOn || !e.dirty {
 		return
 	}
 	now := time.Now()
-	if now.Sub(e.lastAutosave) < autosaveInterval {
+	if now.Sub(e.lastAutosave) < e.autosaveEvery() {
 		return
 	}
 	e.lastAutosave = now
 	e.writeRecoveryAsync()
 }
 
-// writeRecovery stores the current buffer as a crash-recovery snapshot, streaming
-// it so no second copy of the document is built.
-func (e *Editor) writeRecovery() {
-	if e.largeFile {
-		// A snapshot copies the whole document every interval, which for a large
-		// file costs more than it can recover.
-		return
-	}
+// recoveryFile is the snapshot path for the current buffer, with its directory
+// created, or "" when snapshots are not possible.
+func (e *Editor) recoveryFile() string {
 	p := recoveryPath(e.recoveryKey())
 	if p == "" {
-		return
+		return ""
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return ""
+	}
+	return p
+}
+
+// writeRecovery stores the current buffer as a crash-recovery snapshot, streaming
+// it from the page store so no second copy of the document is built.
+func (e *Editor) writeRecovery() {
+	if e.doc == nil {
 		return
 	}
-	if e.doc == nil {
+	p := e.recoveryFile()
+	if p == "" {
 		return
 	}
 	_ = writeFileAtomicWith(p, func(w io.Writer) error {
@@ -98,17 +115,11 @@ func (e *Editor) writeRecovery() {
 // fsync and rename in writeFileAtomic are fast but not free, and this runs while
 // the user is typing.
 func (e *Editor) writeRecoveryAsync() {
-	if e.largeFile {
-		return
-	}
-	p := recoveryPath(e.recoveryKey())
-	if p == "" {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return
-	}
 	if e.doc == nil {
+		return
+	}
+	p := e.recoveryFile()
+	if p == "" {
 		return
 	}
 	// The write runs off the UI goroutine, so it gets its own view of the pages.
