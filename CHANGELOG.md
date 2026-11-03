@@ -11,6 +11,45 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.5.0] - 2026-11-02
+
+Large files now get their own editor surface, and `widget.Entry` is out of the
+picture for them entirely.
+
+### Added
+
+- `codeView`, a canvas-rendered editing widget: it draws only the lines on
+  screen (~35 `canvas.Text` objects), keeps the caret as a document position and
+  edits the `Document` directly. Because it implements `fyne.Scrollable`, Fyne
+  clips it, and because it draws its own scrollbar it needs no `Scroll`
+  container.
+- Full editing in large-file mode: typing, Enter/Backspace/Delete, Tab and
+  Shift+Tab, arrows/Home/End/PageUp/PageDown with Shift selection, Ctrl
+  word-wise and document-wise movement, click to place the caret, drag to
+  select (with scrolling past the edges), double-click to select a word, cut /
+  copy / paste / select-all, and horizontal scrolling for long lines.
+- A real undo history for large files: edits record the text they replaced, so
+  undo and redo work across the whole document and consecutive typing is undone
+  as one run. The line operations and replace-all are single steps.
+- The line operations, find/replace, go-to-line and session restore are
+  re-expressed against the document rather than a string window.
+
+### Changed
+
+- Scrolling redraws a page in ~0.3 ms instead of refilling a 114-line window in
+  ~25 ms: no more hiccup at window boundaries, and no boundaries to hit.
+- The line index is spliced in place on an edit instead of being rebuilt, so a
+  keystroke costs one add per line below the caret rather than a 4.8 MB copy.
+  A keystroke in a 600k-line file dropped from 4.3 ms to 1.4 ms.
+- A 24 MB / 600k-line file opens in ~80 ms with ~5 MB of heap (was ~150 ms).
+- The window title and the status readout are only updated when their text
+  actually changes, so keystrokes no longer force a chrome relayout for nothing.
+
+### Removed
+
+- The windowed `Entry` viewport from 1.4.0 (and its 40-line margin, refills and
+  window-bounded selection), replaced by `codeView`.
+
 ## [1.4.0] - 2026-11-02
 
 Large files are now **editable**, not just openable.

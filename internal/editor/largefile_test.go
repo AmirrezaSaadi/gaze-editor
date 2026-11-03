@@ -156,15 +156,17 @@ func TestLargeFileModeSkipsSnapshotsAndTrim(t *testing.T) {
 		t.Fatal("large-file mode must not write recovery snapshots")
 	}
 
-	e.buffer().CursorRow, e.buffer().CursorColumn = 0, 0
+	e.code.setCaret(pos{})
 	e.DuplicateLine()
-	if e.buffer().Text != "a  \na  \nb" {
-		t.Fatalf("duplicate = %q", e.buffer().Text)
+	if got := e.doc.TextRange(0, e.doc.Len()); got != "a  \na  \nb" {
+		t.Fatalf("duplicate = %q", got)
 	}
+	// Structural commands are undoable in large-file mode too.
 	e.Undo()
-	if e.buffer().Text != "a  \na  \nb" {
-		t.Fatalf("undo changed a large-file buffer: %q", e.buffer().Text)
+	if got := e.doc.TextRange(0, e.doc.Len()); got != "a  \nb" {
+		t.Fatalf("undo = %q, want the original text back", got)
 	}
+	e.DuplicateLine()
 
 	e.writeTo(path)
 	data, err := os.ReadFile(path)
