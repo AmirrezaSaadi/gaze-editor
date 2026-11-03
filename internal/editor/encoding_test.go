@@ -124,7 +124,7 @@ func TestUTF16FileSurvivesEditAndSave(t *testing.T) {
 	e := newTestEditor(t)
 	e.setContent(text, path, enc)
 
-	e.entry.SetText("one\ntwo\nthree\n")
+	setBuffer(e, "one\ntwo\nthree\n")
 	e.writeTo(path)
 
 	got, err := os.ReadFile(path)

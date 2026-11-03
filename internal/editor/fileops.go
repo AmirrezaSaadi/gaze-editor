@@ -26,10 +26,11 @@ const (
 	maxRecent = 10
 )
 
-// Size limits for opening a file. Fyne's Entry lays out the whole buffer, which
-// costs on the order of a kilobyte of heap per line, so past a certain size Gaze
-// has to either shed the chrome that duplicates the document or refuse it.
-// They are variables so tests can move them.
+// Size limits for opening a file. Gaze keeps the whole document in a page store
+// and draws only the lines on screen, so a big file no longer crashes the window
+// — but the chrome around it (word counts, undo, recovery) still scans the whole
+// buffer, so past a certain size it is shed instead. They are variables so tests
+// can move them.
 var (
 	// LargeFileBytes is where opening asks first and switches to large-file mode.
 	LargeFileBytes int64 = 16 << 20
@@ -174,36 +175,18 @@ func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 	}
 	e.indentUseTabs, e.indentWidth = detectIndent(text)
 
-	if mode.large() {
-		e.largeFile = true
-		// The document keeps the text as pages and codeView draws it, so the
-		// buffer never reaches a widget.Entry at all.
-		e.doc = NewDocument(text)
-		e.loading = true
-		e.entry.SetText("")
-		e.loading = false
-		e.resetUndo()
-		e.currentFile = path
-		e.dirty = false
-		e.applyOpenMode()
-		e.code.setDoc(e.doc)
-		e.refreshChrome()
-		freeMemory(0)
-		return
-	}
-
-	e.largeFile = false
-	e.doc = nil
+	// Every file lives in a document; the open mode only decides which chrome is
+	// worth keeping (counts, snapshots, the save-time trim).
+	e.largeFile = mode.large()
+	e.editSeq++ // a new document invalidates any save request still in flight
 	e.loading = true
-	e.entry.SetText(text)
-	e.loading = false
+	e.doc = NewDocument(text)
 	e.resetUndo()
-
-	e.entry.CursorRow, e.entry.CursorColumn = 0, 0
-	e.entry.Refresh()
 	e.currentFile = path
 	e.dirty = false
-	e.applyOpenMode()
+	e.applyWrap()
+	e.code.setDoc(e.doc)
+	e.loading = false
 	e.refreshChrome()
 	freeMemory(len(text))
 }
@@ -402,8 +385,7 @@ func (e *Editor) SaveFile() {
 // a background goroutine without reading widgets concurrently with editing.
 type saveRequest struct {
 	path    string
-	text    string    // normal mode: the whole buffer
-	doc     *Document // large-file mode: the text is streamed from its pages
+	doc     *Document // the text is streamed from its pages
 	eol     string
 	enc     string
 	trim    bool
@@ -423,29 +405,30 @@ func (e *Editor) pendingSave(path string) saveRequest {
 		prevKey: e.recoveryKey(),
 		seq:     e.editSeq,
 	}
+	// The write runs on a background goroutine, so it gets its own view of the
+	// pages: editing must not change what is being written.
 	if e.doc != nil {
-		// The write runs on a background goroutine, so it gets its own view of
-		// the pages: editing the window must not change what is being written.
 		req.doc = e.doc.Snapshot()
-	} else {
-		req.text = e.entry.Text
 	}
 	return req
 }
 
 // bytes reports the size of the text the request will write.
 func (r saveRequest) bytes() int {
-	if r.doc != nil {
-		return r.doc.Len()
+	if r.doc == nil {
+		return 0
 	}
-	return len(r.text)
+	return r.doc.Len()
 }
 
 // render produces the bytes for disk and the \n-only buffer they came from:
 // trailing whitespace is stripped when the option is on and line endings are
 // converted back to the file's style.
 func (r saveRequest) render() (out, trimmed string) {
-	trimmed = r.text
+	if r.doc == nil {
+		return "", ""
+	}
+	trimmed = r.doc.Text()
 	if r.trim {
 		trimmed = trimTrailingSpace(trimmed)
 	}
@@ -463,12 +446,12 @@ func (r saveRequest) render() (out, trimmed string) {
 // actually written.
 func (r saveRequest) write() (trimmed string, err error) {
 	err = writeFileAtomicWith(r.path, func(w io.Writer) error {
-		if r.doc != nil {
-			// Streamed straight from the document's pages: no copy of the file
-			// is built in memory.
-			return writeDocumentLines(w, r.doc.eachLine, r.eol, r.enc, r.trim)
+		if r.doc == nil {
+			return errNoDocument
 		}
-		return writeDocument(w, r.text, r.eol, r.enc, r.trim)
+		// Streamed straight from the document's pages: no copy of the file is
+		// built in memory.
+		return writeDocumentLines(w, r.doc.eachLine, r.eol, r.enc, r.trim)
 	})
 	if err != nil {
 		return "", err
@@ -476,14 +459,26 @@ func (r saveRequest) write() (trimmed string, err error) {
 	return r.bufferAfterWrite(), nil
 }
 
+// writeTo writes the request to an already-open writer, for Save As.
+func (r saveRequest) writeTo(w io.Writer) error {
+	if r.doc == nil {
+		return errNoDocument
+	}
+	return writeDocumentLines(w, r.doc.eachLine, r.eol, r.enc, r.trim)
+}
+
+// errNoDocument is reported if a save is attempted with no document behind it.
+var errNoDocument = errors.New("gaze: no document to save")
+
 // bufferAfterWrite is the buffer state that matches what write put on disk.
 // Trimming is mirrored back into the editor, so the trimmed text is returned when
 // it is in use.
 func (r saveRequest) bufferAfterWrite() string {
-	if r.doc != nil || !r.trim {
-		return r.text
+	if !r.trim || r.doc == nil {
+		// Nothing to mirror: the buffer is already what was written.
+		return ""
 	}
-	return trimTrailingSpace(r.text)
+	return trimTrailingSpace(r.doc.Text())
 }
 
 // writeTo writes the buffer to path synchronously, reporting errors in the UI.
@@ -525,7 +520,7 @@ func (e *Editor) saveAsync(path string) {
 func (e *Editor) finishSave(req saveRequest, trimmed string) {
 	// The buffer is unchanged if nothing was typed since the request was made.
 	sameBuffer := e.editSeq == req.seq
-	if sameBuffer && req.doc == nil {
+	if sameBuffer && trimmed != "" {
 		e.adoptTrimmed(trimmed)
 	}
 	e.currentFile = req.path
@@ -551,16 +546,19 @@ func (e *Editor) serialize() (out, trimmed string) {
 	return e.pendingSave(e.currentFile).render()
 }
 
-// adoptTrimmed mirrors a save-time trim back into the buffer without marking
-// the document dirty. The pre-trim buffer is snapshotted so the trim can still
-// be undone.
+// adoptTrimmed mirrors a save-time trim back into the document so the buffer is
+// what is on disk. The trim is recorded as one undoable edit, so it can still be
+// undone.
 func (e *Editor) adoptTrimmed(trimmed string) {
-	if trimmed == e.entry.Text {
+	if e.doc == nil || trimmed == "" {
 		return
 	}
-	e.pushUndo()
+	cur := e.text()
+	if cur == trimmed {
+		return
+	}
 	e.loading = true
-	e.entry.SetText(trimmed)
+	e.code.replaceAll(cur, trimmed)
 	e.loading = false
 	e.updateStats()
 	e.updateInfo()
@@ -668,7 +666,7 @@ func (e *Editor) SaveAsFile() {
 		e.saving = true
 		e.setStatus("saving " + path)
 		go func() {
-			werr := writeDocument(wc, req.text, req.eol, req.enc, req.trim)
+			werr := req.writeTo(wc)
 			cerr := wc.Close()
 			fyne.Do(func() {
 				e.saving = false

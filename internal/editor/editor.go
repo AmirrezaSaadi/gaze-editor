@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -50,17 +49,13 @@ type Editor struct {
 	app fyne.App
 	win fyne.Window
 
-	entry  *widget.Entry // normal-mode buffer: the entry *is* the document
 	status *widget.Label
 	info   *widget.Label
 
-	// Large-file mode: the document lives in doc and code draws the lines on
-	// screen itself, so the whole buffer never reaches a widget.Entry.
+	// Every file is held in doc and edited through code, which draws the lines
+	// on screen itself, so the buffer never reaches a widget.Entry.
 	code *codeView
 	doc  *Document
-
-	normalArea *fyne.Container
-	largeArea  *fyne.Container
 
 	editSeq   uint64
 	lastInfo  string // last text set on the readout, to skip no-op relayouts
@@ -87,7 +82,6 @@ type Editor struct {
 	currentFile string
 	dirty       bool
 	loading     bool
-	restoring   bool
 	largeFile   bool
 	wrap        bool
 	trimOnSave  bool
@@ -97,11 +91,6 @@ type Editor struct {
 	enc           string
 	indentUseTabs bool
 	indentWidth   int
-
-	undo      []snapshot
-	redo      []snapshot
-	undoBytes int
-	redoBytes int
 
 	histIndex int
 	histDraft string
@@ -147,89 +136,65 @@ func New(a fyne.App, w fyne.Window) *Editor {
 	return e
 }
 
-// buffer is the entry that holds a normal file's text. Large files never use it:
-// they are edited through codeView and the Document.
-func (e *Editor) buffer() *widget.Entry { return e.entry }
-
-// focusTarget is the widget that takes keyboard focus for the current mode.
-func (e *Editor) focusTarget() fyne.Focusable {
-	if e.largeFile && e.code != nil {
-		return e.code
+// text is the whole buffer as a string. It is for the commands that need the
+// text as a whole (find, counts, recovery); the renderer and the save path work
+// on the document directly.
+func (e *Editor) text() string {
+	if e.doc == nil {
+		return ""
 	}
-	return e.entry
+	return e.doc.Text()
 }
+
+// focusTarget is the widget that takes keyboard focus.
+func (e *Editor) focusTarget() fyne.Focusable { return e.code }
 
 // caretLineCol is the 1-based document position of the caret.
 func (e *Editor) caretLineCol() (line, col int) {
-	if e.largeFile && e.code != nil {
-		return e.code.caret.row + 1, e.code.caret.col + 1
+	if e.code == nil {
+		return 1, 1
 	}
-	buf := e.buffer()
-	return buf.CursorRow + 1, buf.CursorColumn + 1
+	return e.code.caret.row + 1, e.code.caret.col + 1
 }
 
-// onCursorChanged keeps the readout and the window in step with the caret. It is
-// ignored while a window is being installed: SetText moves the caret to the end
-// of the new text, and following that would refill again and again.
-func (e *Editor) onCursorChanged() {
+// resetUndo clears the undo history, for a document that was just opened.
+func (e *Editor) resetUndo() {
+	if e.code != nil {
+		e.code.resetUndo()
+	}
+}
+
+// onCodeChange is called by the code view after it has edited the document: the
+// text is already changed, so this only updates the state around it.
+func (e *Editor) onCodeChange() {
 	if e.loading {
 		return
 	}
-	e.updateInfo()
-}
-
-// onCodeChange is the large-file equivalent of a buffer change: the document has
-// already been edited, so this only updates the editor state around it.
-func (e *Editor) onCodeChange() {
-	if e.loading || e.restoring {
-		return
-	}
-	e.dropRedo()
 	e.dirty = true
 	e.editSeq++
+	e.updateStatsForChange()
 	e.updateTitle()
 	e.updateInfo()
 	e.maybeAutosave()
 }
 
 // applyOpenMode shows the widget that matches how the file was opened.
-func (e *Editor) applyOpenMode() {
-	if e.normalArea == nil || e.largeArea == nil {
-		return
-	}
-	if e.largeFile {
-		e.normalArea.Hide()
-		e.largeArea.Show()
-	} else {
-		e.largeArea.Hide()
-		e.normalArea.Show()
-	}
-	e.applyWrap()
-	if e.win != nil && e.win.Canvas() != nil {
-		e.win.Canvas().Focus(e.focusTarget())
-	}
-}
 
 // revealOffset makes a document offset visible and puts the caret there.
 func (e *Editor) revealOffset(off int) {
-	if e.doc != nil && e.code != nil {
+	if e.code != nil {
 		e.code.setCaret(e.code.posAt(off))
-		return
 	}
-	e.moveCursorTo(off)
-}
-
-// editDocument runs a change the editor makes to the document itself (find and
-// replace or a replacement) and treats it like typing.
-func (e *Editor) editDocument(change func()) {
-	change()
-	e.onCodeChange()
 }
 
 // BuildUI constructs the editor, toolbar, find bar, status line and menus, and
 // installs them on the window.
 func (e *Editor) BuildUI() {
-	e.buildEntry()
+	e.buildWidgets()
+	if e.doc == nil {
+		e.doc = NewDocument("")
+		e.code.setDoc(e.doc)
+	}
 	e.buildFindBar()
 	e.buildTipLayer()
 	e.buildMenus()
@@ -246,12 +211,7 @@ func (e *Editor) BuildUI() {
 	e.win.Canvas().Focus(e.focusTarget())
 }
 
-func (e *Editor) buildEntry() {
-	e.entry = widget.NewMultiLineEntry()
-	e.entry.TextStyle = fyne.TextStyle{Monospace: true}
-	e.entry.OnChanged = func(string) { e.onChanged() }
-	e.entry.OnCursorChanged = func() { e.onCursorChanged() }
-
+func (e *Editor) buildWidgets() {
 	e.code = newCodeView(e)
 
 	e.status = widget.NewLabel("")
@@ -301,12 +261,7 @@ func (e *Editor) buildLayout() {
 
 	top := container.NewVBox(toolbar, e.findBar)
 	bottom := container.NewBorder(nil, nil, container.NewPadded(e.status), container.NewPadded(e.info))
-	e.normalArea = container.NewStack(container.NewScroll(e.entry))
-	e.largeArea = container.NewStack(e.code)
-	e.largeArea.Hide()
-	center := container.NewStack(e.normalArea, e.largeArea)
-
-	main := container.NewBorder(top, bottom, nil, nil, center)
+	main := container.NewBorder(top, bottom, nil, nil, e.code)
 	e.win.SetContent(container.NewStack(main, e.tipLayer))
 	if c := e.win.Canvas(); c != nil {
 		c.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyEscape}, func(fyne.Shortcut) { e.escape() })
@@ -396,26 +351,14 @@ func (e *Editor) themeItem(name string) *fyne.MenuItem {
 
 // onChanged marks the buffer dirty, refreshes the chrome and snapshots a
 // recovery copy after user edits.
-func (e *Editor) onChanged() {
-	if e.loading || e.restoring {
-		return
-	}
-	e.dropRedo()
-	e.dirty = true
-	e.editSeq++
-	e.updateStatsForChange()
-	e.updateTitle()
-	e.updateInfo()
-	e.maybeAutosave()
-}
 
 // updateStatsForChange keeps typing cheap in large buffers: small files are
 // recounted immediately, big ones once the user pauses.
 func (e *Editor) updateStatsForChange() {
-	if e.largeFile {
+	if e.largeFile || e.doc == nil {
 		return
 	}
-	if len(e.entry.Text) <= statsSyncLimit {
+	if e.doc.Len() <= statsSyncLimit {
 		e.updateStats()
 		return
 	}
@@ -424,7 +367,7 @@ func (e *Editor) updateStatsForChange() {
 	}
 	e.statsTimer = time.AfterFunc(statsDelay, func() {
 		fyne.Do(func() {
-			if e.entry == nil || e.info == nil {
+			if e.doc == nil || e.info == nil {
 				return
 			}
 			e.updateStats()
@@ -436,13 +379,11 @@ func (e *Editor) updateStatsForChange() {
 // updateStats recomputes the cached word/character counts. Large-file mode skips
 // it: the scan is O(buffer) and the counts are not shown.
 func (e *Editor) updateStats() {
-	if e.largeFile {
+	if e.largeFile || e.doc == nil {
 		e.statChars, e.statWords = 0, 0
 		return
 	}
-	text := e.entry.Text
-	e.statChars = utf8.RuneCountInString(text)
-	e.statWords = countWords(text)
+	e.statChars, e.statWords = e.doc.counts()
 }
 
 // updateTitle refreshes the window title from the current file and dirty flag.
@@ -467,7 +408,7 @@ func (e *Editor) updateTitle() {
 
 // updateInfo refreshes the compact cursor/document readout in the status bar.
 func (e *Editor) updateInfo() {
-	if e.info == nil || e.entry == nil {
+	if e.info == nil || e.code == nil {
 		return
 	}
 	line, col := e.caretLineCol()
@@ -577,68 +518,34 @@ func (e *Editor) refreshChrome() {
 	e.updateInfo()
 }
 
-// Undo reverts the last edit. Entry's native stack handles typing; the
-// snapshots cover the whole-buffer rewrites that clear it.
+// Undo reverts the last edit.
 func (e *Editor) Undo() {
-	if e.largeFile && e.code != nil {
+	if e.code != nil {
 		e.code.Undo()
-		return
 	}
-	if e.entry == nil {
-		return
-	}
-	before := e.buffer().Text
-	e.buffer().Undo()
-	if e.buffer().Text != before {
-		return // Entry undid a keystroke (and fired OnChanged for us)
-	}
-	e.popUndo()
 }
 
-// Redo reapplies the last undone edit, preferring Entry's stack for the same
-// reason Undo does.
+// Redo reapplies the last undone edit.
 func (e *Editor) Redo() {
-	if e.largeFile && e.code != nil {
+	if e.code != nil {
 		e.code.Redo()
-		return
 	}
-	if e.entry == nil {
-		return
-	}
-	before := e.buffer().Text
-	e.buffer().Redo()
-	if e.buffer().Text != before {
-		return
-	}
-	e.popRedo()
 }
 
 // SelectAll selects the entire buffer.
 // SelectAll selects the whole document.
 func (e *Editor) SelectAll() {
-	if e.largeFile && e.code != nil {
+	if e.code != nil {
 		e.code.selectAll()
-		return
 	}
-	e.entry.TypedShortcut(&fyne.ShortcutSelectAll{})
 }
 
 // clipboard routes a cut/copy/paste shortcut through the entry with the
 // window's clipboard attached.
 func (e *Editor) clipboard(sc fyne.Shortcut) {
-	switch s := sc.(type) {
-	case *fyne.ShortcutCut:
-		s.Clipboard = e.win.Clipboard()
-	case *fyne.ShortcutCopy:
-		s.Clipboard = e.win.Clipboard()
-	case *fyne.ShortcutPaste:
-		s.Clipboard = e.win.Clipboard()
-	}
-	if e.largeFile && e.code != nil {
+	if e.code != nil {
 		e.code.TypedShortcut(sc)
-		return
 	}
-	e.entry.TypedShortcut(sc)
 }
 
 // ToggleWrap flips word wrapping and persists the choice.
@@ -695,100 +602,44 @@ func (e *Editor) indentString() string {
 
 // MoveLineUp swaps the caret's line with the one above it.
 func (e *Editor) MoveLineUp() {
-	if e.largeFile && e.code != nil {
+	if e.code != nil {
 		e.code.moveLineUp()
-		return
 	}
-	buf := e.buffer()
-	text := buf.Text
-	if text == "" {
-		return
-	}
-	nt, row := moveLineUp(text, buf.CursorRow)
-	e.applyLineEdit(nt, row, buf.CursorColumn)
 }
 
 // MoveLineDown swaps the caret's line with the one below it.
 func (e *Editor) MoveLineDown() {
-	if e.largeFile && e.code != nil {
+	if e.code != nil {
 		e.code.moveLineDown()
-		return
 	}
-	buf := e.buffer()
-	text := buf.Text
-	if text == "" {
-		return
-	}
-	nt, row := moveLineDown(text, buf.CursorRow)
-	e.applyLineEdit(nt, row, buf.CursorColumn)
 }
 
 // DuplicateLine copies the caret's line beneath itself.
 func (e *Editor) DuplicateLine() {
-	if e.largeFile && e.code != nil {
+	if e.code != nil {
 		e.code.duplicateLine()
-		return
 	}
-	buf := e.buffer()
-	text := buf.Text
-	if text == "" {
-		return
-	}
-	nt, row := duplicateLine(text, buf.CursorRow)
-	e.applyLineEdit(nt, row, buf.CursorColumn)
 }
 
 // IndentLine adds one indentation level to the caret's line.
 func (e *Editor) IndentLine() {
-	if e.largeFile && e.code != nil {
+	if e.code != nil {
 		e.code.indent()
-		return
 	}
-	buf := e.buffer()
-	row := buf.CursorRow
-	indent := e.indentString()
-	nt := indentLine(buf.Text, row, indent)
-	e.applyLineEdit(nt, row, buf.CursorColumn+utf8.RuneCountInString(indent))
 }
 
 // OutdentLine removes one indentation level from the caret's line.
 func (e *Editor) OutdentLine() {
-	if e.largeFile && e.code != nil {
+	if e.code != nil {
 		e.code.outdent()
-		return
 	}
-	buf := e.buffer()
-	row := buf.CursorRow
-	nt, removed := outdentLine(buf.Text, row, e.indentUseTabs, e.indentWidth)
-	col := buf.CursorColumn - removed
-	if col < 0 {
-		col = 0
-	}
-	e.applyLineEdit(nt, row, col)
 }
 
 // applyLineEdit installs a whole-buffer result, keeping the caret in place.
 // widget.Entry has no range-edit API, so line operations rewrite via SetText,
 // which clears Entry's own history — the snapshot is what makes them undoable.
-func (e *Editor) applyLineEdit(newText string, row, col int) {
-	buf := e.buffer()
-	if newText == buf.Text {
-		return
-	}
-	e.pushUndo()
-	buf.SetText(newText)
-	buf.CursorRow, buf.CursorColumn = row, col
-	buf.Refresh()
-	e.updateInfo()
-}
 
 func (e *Editor) applyWrap() {
-	wrap := e.wrap && !e.largeFile
-	if wrap {
-		e.entry.Wrapping = fyne.TextWrapWord
-	} else {
-		e.entry.Wrapping = fyne.TextWrapOff
-	}
 	if e.code != nil {
 		// The code view wraps itself: it splits a line into visual rows of the
 		// width that fits, so a large file can be wrapped too.
@@ -800,7 +651,6 @@ func (e *Editor) applyWrap() {
 			menu.Refresh()
 		}
 	}
-	e.entry.Refresh()
 }
 
 // zoom adjusts the font zoom by direction (+1 in, -1 out).

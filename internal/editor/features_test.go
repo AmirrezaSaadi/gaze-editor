@@ -15,57 +15,57 @@ func TestLineMoveAndDuplicate(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("one\ntwo\nthree", "")
 
-	e.entry.CursorRow, e.entry.CursorColumn = 1, 0
+	e.code.setCaret(pos{row: 1, col: 0})
 	e.MoveLineUp()
-	if e.entry.Text != "two\none\nthree" {
-		t.Fatalf("MoveLineUp = %q", e.entry.Text)
+	if bufferText(e) != "two\none\nthree" {
+		t.Fatalf("MoveLineUp = %q", bufferText(e))
 	}
-	if e.entry.CursorRow != 0 {
-		t.Fatalf("MoveLineUp caret row = %d, want 0", e.entry.CursorRow)
+	if caretRow(e) != 0 {
+		t.Fatalf("MoveLineUp caret row = %d, want 0", caretRow(e))
 	}
 
 	e.MoveLineDown()
-	if e.entry.Text != "one\ntwo\nthree" {
-		t.Fatalf("MoveLineDown = %q", e.entry.Text)
+	if bufferText(e) != "one\ntwo\nthree" {
+		t.Fatalf("MoveLineDown = %q", bufferText(e))
 	}
-	if e.entry.CursorRow != 1 {
-		t.Fatalf("MoveLineDown caret row = %d, want 1", e.entry.CursorRow)
+	if caretRow(e) != 1 {
+		t.Fatalf("MoveLineDown caret row = %d, want 1", caretRow(e))
 	}
 
 	e.DuplicateLine()
-	if e.entry.Text != "one\ntwo\ntwo\nthree" {
-		t.Fatalf("DuplicateLine = %q", e.entry.Text)
+	if bufferText(e) != "one\ntwo\ntwo\nthree" {
+		t.Fatalf("DuplicateLine = %q", bufferText(e))
 	}
-	if e.entry.CursorRow != 2 {
-		t.Fatalf("DuplicateLine caret row = %d, want 2", e.entry.CursorRow)
+	if caretRow(e) != 2 {
+		t.Fatalf("DuplicateLine caret row = %d, want 2", caretRow(e))
 	}
 
 	// The first line cannot move up.
-	e.entry.CursorRow = 0
+	e.code.setCaret(pos{row: 0, col: caretCol(e)})
 	e.MoveLineUp()
-	if e.entry.Text != "one\ntwo\ntwo\nthree" {
-		t.Fatalf("MoveLineUp at top changed text: %q", e.entry.Text)
+	if bufferText(e) != "one\ntwo\ntwo\nthree" {
+		t.Fatalf("MoveLineUp at top changed text: %q", bufferText(e))
 	}
 }
 
 func TestIndentOutdent(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("x\ny", "")
-	e.entry.CursorRow = 0
+	e.code.setCaret(pos{row: 0, col: caretCol(e)})
 
 	e.IndentLine()
-	if e.entry.Text != "    x\ny" {
-		t.Fatalf("IndentLine = %q", e.entry.Text)
+	if bufferText(e) != "    x\ny" {
+		t.Fatalf("IndentLine = %q", bufferText(e))
 	}
-	if e.entry.CursorColumn != 4 {
-		t.Fatalf("after indent col = %d, want 4", e.entry.CursorColumn)
+	if caretCol(e) != 4 {
+		t.Fatalf("after indent col = %d, want 4", caretCol(e))
 	}
 	e.OutdentLine()
-	if e.entry.Text != "x\ny" {
-		t.Fatalf("OutdentLine = %q", e.entry.Text)
+	if bufferText(e) != "x\ny" {
+		t.Fatalf("OutdentLine = %q", bufferText(e))
 	}
-	if e.entry.CursorColumn != 0 {
-		t.Fatalf("after outdent col = %d, want 0", e.entry.CursorColumn)
+	if caretCol(e) != 0 {
+		t.Fatalf("after outdent col = %d, want 0", caretCol(e))
 	}
 
 	// Tab-indented documents outdent a full tab.
@@ -74,8 +74,8 @@ func TestIndentOutdent(t *testing.T) {
 		t.Fatal("tab indentation should be detected")
 	}
 	e.OutdentLine()
-	if e.entry.Text != "foo\n\tbar" {
-		t.Fatalf("tab outdent = %q", e.entry.Text)
+	if bufferText(e) != "foo\n\tbar" {
+		t.Fatalf("tab outdent = %q", bufferText(e))
 	}
 }
 
@@ -97,8 +97,8 @@ func TestSerializeTrimAndEOL(t *testing.T) {
 	if e.eol != eolCRLF {
 		t.Fatalf("eol = %q, want CRLF", e.eol)
 	}
-	if e.entry.Text != "a\nb\n" {
-		t.Fatalf("normalised text = %q", e.entry.Text)
+	if bufferText(e) != "a\nb\n" {
+		t.Fatalf("normalised text = %q", bufferText(e))
 	}
 	if out, _ = e.serialize(); out != "a\r\nb\r\n" {
 		t.Fatalf("CRLF serialize = %q", out)
@@ -117,8 +117,8 @@ func TestWriteToTrimsAndAdopts(t *testing.T) {
 	if e.dirty {
 		t.Fatal("writeTo should clear the dirty flag")
 	}
-	if e.entry.Text != "hello\nworld" {
-		t.Fatalf("buffer not trimmed: %q", e.entry.Text)
+	if bufferText(e) != "hello\nworld" {
+		t.Fatalf("buffer not trimmed: %q", bufferText(e))
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -159,24 +159,24 @@ func TestRegexReplaceAndGroups(t *testing.T) {
 	e.regexCheck.Checked = true
 	e.replEntry.SetText("N")
 	e.ReplaceAll()
-	if e.entry.Text != "aN bN cN" {
-		t.Fatalf("regex ReplaceAll = %q", e.entry.Text)
+	if bufferText(e) != "aN bN cN" {
+		t.Fatalf("regex ReplaceAll = %q", bufferText(e))
 	}
 
 	e.SetContent("john smith", "")
 	e.findEntry.SetText(`(\w+) (\w+)`)
 	e.replEntry.SetText("$2 $1")
 	e.ReplaceAll()
-	if e.entry.Text != "smith john" {
-		t.Fatalf("capture-group replace = %q", e.entry.Text)
+	if bufferText(e) != "smith john" {
+		t.Fatalf("capture-group replace = %q", bufferText(e))
 	}
 
 	// An invalid pattern is reported without touching the buffer.
 	e.SetContent("unchanged", "")
 	e.findEntry.SetText("(")
 	e.FindNext()
-	if e.entry.Text != "unchanged" {
-		t.Fatalf("invalid regex changed buffer: %q", e.entry.Text)
+	if bufferText(e) != "unchanged" {
+		t.Fatalf("invalid regex changed buffer: %q", bufferText(e))
 	}
 	if !strings.Contains(e.status.Text, "regex") {
 		t.Fatalf("status = %q, want a regex error", e.status.Text)
@@ -220,12 +220,12 @@ func TestGotoLineCol(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("abc\ndefgh\nij", "")
 	e.gotoLineCol(2, 3)
-	if e.entry.CursorRow != 1 || e.entry.CursorColumn != 3 {
-		t.Fatalf("gotoLineCol = (%d,%d), want (1,3)", e.entry.CursorRow, e.entry.CursorColumn)
+	if caretRow(e) != 1 || caretCol(e) != 3 {
+		t.Fatalf("gotoLineCol = (%d,%d), want (1,3)", caretRow(e), caretCol(e))
 	}
 	e.gotoLineCol(2, 99) // col clamps
-	if e.entry.CursorColumn != 5 {
-		t.Fatalf("clamped col = %d, want 5", e.entry.CursorColumn)
+	if caretCol(e) != 5 {
+		t.Fatalf("clamped col = %d, want 5", caretCol(e))
 	}
 }
 
@@ -241,7 +241,7 @@ func TestSessionRestore(t *testing.T) {
 	e1 := New(a, w1)
 	e1.BuildUI()
 	e1.OpenPath(path)
-	e1.entry.CursorRow, e1.entry.CursorColumn = 2, 3
+	e1.code.setCaret(pos{row: 2, col: 3})
 	e1.saveSession(path)
 
 	w2 := test.NewWindow(nil)
@@ -252,8 +252,8 @@ func TestSessionRestore(t *testing.T) {
 	if e2.currentFile != path {
 		t.Fatalf("restored file = %q, want %q", e2.currentFile, path)
 	}
-	if e2.entry.CursorRow != 2 || e2.entry.CursorColumn != 3 {
-		t.Fatalf("restored caret = (%d,%d), want (2,3)", e2.entry.CursorRow, e2.entry.CursorColumn)
+	if row, col := caret(e2); row != 2 || col != 3 {
+		t.Fatalf("restored caret = (%d,%d), want (2,3)", row, col)
 	}
 }
 
@@ -269,8 +269,8 @@ func TestDropOpensFile(t *testing.T) {
 	if e.currentFile != path {
 		t.Fatalf("dropped file = %q, want %q", e.currentFile, path)
 	}
-	if e.entry.Text != "dropped" {
-		t.Fatalf("dropped content = %q", e.entry.Text)
+	if bufferText(e) != "dropped" {
+		t.Fatalf("dropped content = %q", bufferText(e))
 	}
 }
 
@@ -284,7 +284,7 @@ func TestRecoverySnapshot(t *testing.T) {
 
 	e := newTestEditor(t)
 	e.currentFile = path
-	e.entry.SetText("unsaved edit")
+	setBuffer(e, "unsaved edit")
 	e.writeRecovery()
 
 	rec, ok := recoveryFor(path)

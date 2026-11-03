@@ -4,6 +4,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // docPageSize is the target size of a document page. Pages are the unit of a
@@ -326,6 +327,29 @@ func (d *Document) eachLine(fn func(line string, hasNewline bool) error) error {
 		carry = s[start:]
 	}
 	return fn(carry, false)
+}
+
+// counts returns the character and word counts of the document, streaming the
+// pages instead of building the text.
+func (d *Document) counts() (chars, words int) {
+	inWord := false
+	_ = d.eachLine(func(line string, hasNewline bool) error {
+		inWord = false // a line break separates words
+		if hasNewline {
+			chars++ // the line break is a character too
+		}
+		for _, r := range line {
+			chars++
+			if unicode.IsSpace(r) {
+				inWord = false
+			} else if !inWord {
+				inWord = true
+				words++
+			}
+		}
+		return nil
+	})
+	return chars, words
 }
 
 // utf8Count counts the runes in s.

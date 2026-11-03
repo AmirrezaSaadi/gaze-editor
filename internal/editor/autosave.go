@@ -74,8 +74,8 @@ func (e *Editor) maybeAutosave() {
 // it so no second copy of the document is built.
 func (e *Editor) writeRecovery() {
 	if e.largeFile {
-		// Only a window of the document is in the entry, so a snapshot would be
-		// a truncated file masquerading as a recovery copy.
+		// A snapshot copies the whole document every interval, which for a large
+		// file costs more than it can recover.
 		return
 	}
 	p := recoveryPath(e.recoveryKey())
@@ -85,9 +85,11 @@ func (e *Editor) writeRecovery() {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return
 	}
-	text := e.entry.Text
+	if e.doc == nil {
+		return
+	}
 	_ = writeFileAtomicWith(p, func(w io.Writer) error {
-		_, err := io.WriteString(w, text)
+		_, err := e.doc.WriteTo(w)
 		return err
 	})
 }
@@ -106,10 +108,14 @@ func (e *Editor) writeRecoveryAsync() {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return
 	}
-	text := e.entry.Text
+	if e.doc == nil {
+		return
+	}
+	// The write runs off the UI goroutine, so it gets its own view of the pages.
+	doc := e.doc.Snapshot()
 	go func() {
 		_ = writeFileAtomicWith(p, func(w io.Writer) error {
-			_, err := io.WriteString(w, text)
+			_, err := doc.WriteTo(w)
 			return err
 		})
 	}()

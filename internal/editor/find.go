@@ -240,11 +240,8 @@ func (e *Editor) ReplaceCurrent() {
 	}
 
 	repl := m.expand(text, start, e.replEntry.Text)
-	if e.doc != nil && e.code != nil {
+	if e.code != nil {
 		e.code.edit(start, text[start:start+n], repl, false)
-	} else {
-		e.replaceRange(start, n, repl)
-		e.moveCursorTo(start + len(repl))
 	}
 	e.setStatus("replaced 1 occurrence")
 }
@@ -278,8 +275,7 @@ func (e *Editor) ReplaceAll() {
 		e.code.edit(0, text, out, false)
 		e.code.setCaret(e.code.posAt(at))
 	} else {
-		e.replaceRange(0, len(text), out)
-		e.moveCursorTo(at)
+		e.code.replaceAll(text, out)
 	}
 	e.setStatus(fmt.Sprintf("replaced %d occurrences", count))
 }
@@ -287,25 +283,8 @@ func (e *Editor) ReplaceAll() {
 // replaceRange rewrites the whole buffer, replacing [start, start+n) with repl.
 // widget.Entry exposes no range-edit API, so a full SetText is used; the
 // snapshot is what keeps the rewrite undoable.
-func (e *Editor) replaceRange(start, n int, repl string) {
-	text := e.entry.Text
-	if start < 0 || start+n > len(text) {
-		return
-	}
-	next := text[:start] + repl + text[start+n:]
-	if next == text {
-		return
-	}
-	e.pushUndo()
-	e.entry.SetText(next)
-}
 
 // moveCursorTo places the caret at a byte offset and scrolls it into view.
-func (e *Editor) moveCursorTo(offset int) {
-	row, col := rowColFromOffset(e.entry.Text, offset)
-	e.entry.CursorRow, e.entry.CursorColumn = row, col
-	e.entry.Refresh()
-}
 
 // recordFind promotes query to the front of the persisted find history.
 func (e *Editor) recordFind(query string) {
@@ -382,60 +361,35 @@ func (e *Editor) gotoLine(n int) {
 	e.gotoLineCol(n, 0)
 }
 
-// searchText is the text find and replace work on: the document for a large
-// file, the entry otherwise.
-func (e *Editor) searchText() string {
-	if e.doc != nil {
-		return e.doc.Text()
-	}
-	return e.entry.Text
-}
+// searchText is the text find and replace work on.
+func (e *Editor) searchText() string { return e.text() }
 
 // caretOffset is the caret's byte offset into text.
-func (e *Editor) caretOffset(text string) int {
-	if e.doc != nil && e.code != nil {
-		return e.code.offset(e.code.caret)
+func (e *Editor) caretOffset(string) int {
+	if e.code == nil {
+		return 0
 	}
-	return runeOffset(text, e.entry.CursorRow, e.entry.CursorColumn)
+	return e.code.offset(e.code.caret)
 }
 
 // gotoLineCol moves the caret to the 1-based line and (0-based) rune column.
 func (e *Editor) gotoLineCol(line, col int) {
-	if e.doc != nil && e.code != nil {
-		total := e.doc.LineCount()
-		if line < 1 {
-			line = 1
-		}
-		if line > total {
-			line = total
-		}
-		maxCol := utf8.RuneCountInString(e.doc.LineText(line - 1))
-		if col < 0 {
-			col = 0
-		}
-		if col > maxCol {
-			col = maxCol
-		}
-		e.code.gotoLine(line-1, col)
-		e.setStatus(fmt.Sprintf("line %d of %d", line, total))
+	if e.doc == nil || e.code == nil {
 		return
 	}
-	text := e.entry.Text
-	total := lineCount(text)
+	total := e.doc.LineCount()
 	if line < 1 {
 		line = 1
 	}
 	if line > total {
 		line = total
 	}
-	start, end := lineBounds(text, line-1)
-	maxCol := utf8.RuneCountInString(text[start:end])
 	if col < 0 {
 		col = 0
 	}
-	if col > maxCol {
+	if maxCol := utf8Count(e.doc.LineText(line - 1)); col > maxCol {
 		col = maxCol
 	}
-	e.moveCursorTo(runeOffset(text, line-1, col))
+	e.code.gotoLine(line-1, col)
 	e.setStatus(fmt.Sprintf("line %d of %d", line, total))
 }
