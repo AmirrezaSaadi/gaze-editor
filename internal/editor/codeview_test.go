@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/driver/desktop"
@@ -107,8 +108,8 @@ func TestCodeViewScrolling(t *testing.T) {
 	v := e.code
 
 	v.scrollLines(100)
-	if v.top != 100 {
-		t.Fatalf("top = %d, want 100", v.top)
+	if v.topRow != 100 {
+		t.Fatalf("top = %d, want 100", v.topRow)
 	}
 	if got := v.texts[0].Text; got != "line 100 of the big file" {
 		t.Fatalf("top line = %q", got)
@@ -118,25 +119,25 @@ func TestCodeViewScrolling(t *testing.T) {
 	}
 
 	v.scrollLines(-1000)
-	if v.top != 0 {
-		t.Fatalf("top = %d after scrolling past the start", v.top)
+	if v.topRow != 0 {
+		t.Fatalf("top = %d after scrolling past the start", v.topRow)
 	}
 	v.scrollLines(100000)
 	want := e.doc.LineCount() - v.visibleLines()
-	if v.top != want {
-		t.Fatalf("top = %d, want %d at the end of the document", v.top, want)
+	if v.topRow != want {
+		t.Fatalf("top = %d, want %d at the end of the document", v.topRow, want)
 	}
 
 	// The wheel scrolls the same way: negative DY is "down" in Fyne.
 	v.scrollLines(-100000)
 	lineH, _ := v.metrics()
 	v.Scrolled(&fyne.ScrollEvent{Scrolled: fyne.NewDelta(0, -lineH*3)})
-	if v.top != 3 {
-		t.Fatalf("one wheel tick moved the view to line %d, want 3", v.top)
+	if v.topRow != 3 {
+		t.Fatalf("one wheel tick moved the view to line %d, want 3", v.topRow)
 	}
 	v.Scrolled(&fyne.ScrollEvent{Scrolled: fyne.NewDelta(0, lineH)})
-	if v.top != 2 {
-		t.Fatalf("wheel up moved the view to line %d, want 2", v.top)
+	if v.topRow != 2 {
+		t.Fatalf("wheel up moved the view to line %d, want 2", v.topRow)
 	}
 }
 
@@ -362,8 +363,8 @@ func TestCodeViewGotoAndFind(t *testing.T) {
 	if got := caretAt(e); got != "49999:3" {
 		t.Fatalf("caret at %s, want 49999:3", got)
 	}
-	if v.top > 49999 || v.top+v.visibleLines() <= 49999 {
-		t.Fatalf("line 49999 is not on screen (top %d, %d visible)", v.top, v.visibleLines())
+	if v.topRow > 49999 || v.topRow+v.visibleLines() <= 49999 {
+		t.Fatalf("line 49999 is not on screen (top %d, %d visible)", v.topRow, v.visibleLines())
 	}
 	if e.info.Text == "" || !strings.Contains(e.info.Text, "50000:4") {
 		t.Fatalf("readout = %q, want it to show 50000:4", e.info.Text)
@@ -375,7 +376,7 @@ func TestCodeViewGotoAndFind(t *testing.T) {
 	if got := caretAt(e); got != "77777:0" {
 		t.Fatalf("find put the caret at %s, want 77777:0", got)
 	}
-	if v.top > 77777 || v.top+v.visibleLines() <= 77777 {
+	if v.topRow > 77777 || v.topRow+v.visibleLines() <= 77777 {
 		t.Fatal("the match is not on screen")
 	}
 
@@ -450,12 +451,12 @@ func TestCodeViewScrollbar(t *testing.T) {
 	if v.thumb.Hidden {
 		t.Fatal("the thumb should be visible in a long document")
 	}
-	before := v.top
+	before := v.topRow
 	v.MouseDown(&desktop.MouseEvent{PointEvent: fyne.PointEvent{Position: fyne.NewPos(v.Size().Width-2, 100)}})
 	if !v.dragBar {
 		t.Fatal("a press in the gutter should start a scrollbar drag")
 	}
-	if v.top <= before {
+	if v.topRow <= before {
 		t.Fatalf("dragging the thumb from %d did not scroll", before)
 	}
 	v.MouseUp(&desktop.MouseEvent{PointEvent: fyne.PointEvent{Position: fyne.NewPos(v.Size().Width-2, 100)}})
@@ -488,7 +489,11 @@ func TestCodeViewLongLine(t *testing.T) {
 	if got := v.colAtCell(0, 199990); got != 199990 {
 		t.Fatalf("colAtCell = %d", got)
 	}
-	// Moving the caret to the end scrolls horizontally rather than growing.
+	// With wrapping off, moving the caret to the end scrolls horizontally.
+	v.setWrap(false)
+	if len(v.rows) != 0 {
+		t.Fatalf("the row index should be dropped when wrapping is off (%d entries)", len(v.rows))
+	}
 	v.setCaret(pos{row: 0, col: 200000})
 	if v.xoffCell <= 0 {
 		t.Fatalf("xoffCell = %d, want the view scrolled right", v.xoffCell)
@@ -604,8 +609,8 @@ func TestCodeViewResize(t *testing.T) {
 		t.Fatalf("visible lines = %d after growing the window, want more than %d", got, small)
 	}
 	e.gotoLineCol(4000, 0)
-	if v.top > 3999 || v.top+v.visibleLines() <= 3999 {
-		t.Fatalf("caret line 3999 is off screen after resize (top %d)", v.top)
+	if v.topRow > 3999 || v.topRow+v.visibleLines() <= 3999 {
+		t.Fatalf("caret line 3999 is off screen after resize (top %d)", v.topRow)
 	}
 	// Narrowing the window reduces the visible cells and keeps the caret in view.
 	v.setCaret(pos{row: 3999, col: 0})
@@ -687,5 +692,190 @@ func TestCodeViewWordMovement(t *testing.T) {
 	v.ctrl = false
 	if got := caretAt(e); got != "0:6" {
 		t.Fatalf("ctrl+left put the caret at %s, want 0:6", got)
+	}
+}
+
+// Wrapping splits a long line into visual rows of the width that fits, and the
+// rows on screen are consecutive pieces of the document.
+func TestCodeViewWrapRendersVisualRows(t *testing.T) {
+	long := strings.Repeat("abcdefgh", 120) // 960 cells
+	e, _ := openCode(t, "short\n"+long+"\n"+codeText(200))
+	v := e.code
+	v.setWrap(true)
+	cells := v.wrapCells()
+
+	chunks := v.chunksOf(1)
+	if want := (960 + cells - 1) / cells; chunks != want {
+		t.Fatalf("the long line takes %d visual rows, want %d", chunks, want)
+	}
+	if got, want := v.totalRows(), v.docLines()-1+chunks; got != want {
+		t.Fatalf("total rows = %d, want %d", got, want)
+	}
+
+	// Every visual row of the long line is on screen when we scroll there.
+	v.topRow = v.rowStart(1)
+	v.render()
+	for i := 0; i < min(chunks, v.visibleLines()); i++ {
+		row, chunk := v.rowOf(v.topRow + i)
+		if row != 1 || chunk != i {
+			t.Fatalf("visual row %d is line %d chunk %d, want 1/%d", i, row, chunk, i)
+		}
+		want := long[i*cells : min((i+1)*cells, len(long))]
+		if got := v.texts[i].Text; got != want {
+			t.Fatalf("visual row %d shows %q, want %q", i, got, want)
+		}
+	}
+
+	// Turning wrapping off drops the index and keeps the view on the same line.
+	v.setWrap(false)
+	if len(v.rows) != 0 {
+		t.Fatal("the row index should be gone when wrapping is off")
+	}
+	if v.topRow != 1 {
+		t.Fatalf("topRow = %d after unwrapping, want the long line (1)", v.topRow)
+	}
+	// Unwrapped, only the cells that fit are drawn, from the left.
+	if got := v.texts[0].Text; got != long[:v.visibleCells()+1] {
+		t.Fatalf("the unwrapped line shows %d characters, want %d",
+			len(got), v.visibleCells()+1)
+	}
+}
+
+// With wrapping on, the caret lives on the visual row its column falls in.
+func TestCodeViewWrapCaretAndMouse(t *testing.T) {
+	long := strings.Repeat("x", 300)
+	e, _ := openCode(t, long+"\n")
+	v := e.code
+	v.setWrap(true)
+	cells := v.wrapCells()
+	lineH, charW := v.metrics()
+	inset := v.inset()
+
+	// The caret at the end of the line is on the last visual row.
+	v.setCaret(pos{row: 0, col: 300})
+	lastChunk := (300) / cells
+	if got := v.caretChunk(); got != min(lastChunk, v.chunksOf(0)-1) {
+		t.Fatalf("caret chunk = %d, want %d", got, lastChunk)
+	}
+	if v.topRow+v.visibleLines() <= v.caretRow() {
+		t.Fatal("the caret's visual row is off screen")
+	}
+
+	// Clicking the second visual row lands on a column in that row's range.
+	y := inset + 1.5*lineH
+	got := v.posAtPoint(fyne.NewPos(inset+charW*2+charW/5, y))
+	if got.row != 0 {
+		t.Fatalf("click landed on line %d, want 0", got.row)
+	}
+	if got.col < cells || got.col > 2*cells {
+		t.Fatalf("click landed on column %d, want it inside the second row [%d,%d]",
+			got.col, cells, 2*cells)
+	}
+}
+
+// The row index is patched on every edit; it must always match a full rebuild.
+func TestCodeViewWrapIndexTracksEdits(t *testing.T) {
+	e, _ := openCode(t, codeText(20)+strings.Repeat("y", 400)+"\nend\n")
+	v := e.code
+	v.setWrap(true)
+
+	pieces := []string{"a", "\n", "\t", "héllo", "😀", "", "zzz"}
+	states := make([]string, 0, 200)
+	for i := 0; i < 200; i++ {
+		v.rebuildRows()
+		text := docText(e)
+		off := 0
+		if len(text) > 0 {
+			off = int(uint(i*37+11) % uint(len(text)))
+		}
+		// Only cut on rune boundaries.
+		for off > 0 && off < len(text) && !utf8.RuneStart(text[off]) {
+			off--
+		}
+		end := off
+		for end > 0 && !utf8.RuneStart(text[end-1]) {
+			end--
+		}
+		delLen := 0
+		if end < len(text) {
+			_, delLen = utf8.DecodeRuneInString(text[end:])
+		}
+		ins := pieces[i%len(pieces)]
+
+		v.applyReplace(off, text[end:end+delLen], ins)
+
+		patched := append([]int(nil), v.rows...)
+		v.rebuildRows()
+		if len(patched) != len(v.rows) {
+			t.Fatalf("step %d: patched index has %d entries, rebuilt has %d",
+				i, len(patched), len(v.rows))
+		}
+		for j := range patched {
+			if patched[j] != v.rows[j] {
+				t.Fatalf("step %d: patched rows[%d] = %d, rebuilt = %d (doc %q)",
+					i, j, patched[j], v.rows[j], docText(e))
+			}
+		}
+		states = append(states, fmt.Sprint(v.totalRows()))
+	}
+	if len(states) == 0 {
+		t.Fatal("no edits were applied")
+	}
+}
+
+// Wrapping survives a width change: the index is rebuilt for the new width.
+func TestCodeViewWrapOnResize(t *testing.T) {
+	e, _ := openCode(t, strings.Repeat("q", 500)+"\n")
+	v := e.code
+	v.setWrap(true)
+
+	before := v.totalRows()
+	e.win.Resize(fyne.NewSize(450, 900))
+	v.render()
+	after := v.totalRows()
+	if after <= before {
+		t.Fatalf("a narrower window gave %d rows, want more than %d", after, before)
+	}
+	if v.rowsCells != v.wrapCells() {
+		t.Fatalf("the index was built for %d cells, the view is %d wide",
+			v.rowsCells, v.wrapCells())
+	}
+}
+
+// Wrapping breaks between words, not through them, when it can.
+func TestCodeViewWrapBreaksAtWords(t *testing.T) {
+	line := strings.Repeat("word ", 60) // 300 cells of short words
+	e, _ := openCode(t, line+"\n")
+	v := e.code
+	v.setWrap(true)
+
+	starts := v.wrapStarts(0)
+	if len(starts) < 2 {
+		t.Fatalf("the line wrapped into %d rows, want several", len(starts))
+	}
+	maxW := v.wrapCells()
+	for i, start := range starts {
+		if i == 0 {
+			continue
+		}
+		if start <= 0 || start > len(line) || line[start-1] != ' ' {
+			t.Fatalf("row %d starts at %d (%q), want it right after a space",
+				i, start, line[max(0, start-6):min(len(line), start+6)])
+		}
+	}
+	for i := 0; i+1 < len(starts); i++ {
+		if w := starts[i+1] - starts[i]; w > maxW {
+			t.Fatalf("row %d is %d cells wide, want at most %d", i, w, maxW)
+		}
+	}
+	// The caret after the first space is on the first row, not the second.
+	v.setCaret(pos{row: 0, col: 5})
+	if got := v.caretChunk(); got != 0 {
+		t.Fatalf("caret chunk = %d, want 0", got)
+	}
+	// And the caret at the start of the second row is on it.
+	v.setCaret(pos{row: 0, col: starts[1]})
+	if got := v.caretChunk(); got != 1 {
+		t.Fatalf("caret chunk = %d, want 1", got)
 	}
 }

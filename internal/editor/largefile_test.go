@@ -116,7 +116,7 @@ func TestLargeFileModeShedsCopyingChrome(t *testing.T) {
 		t.Fatal("setContentAs(openLarge) should enable large-file mode")
 	}
 	if e.entry.Wrapping != fyne.TextWrapOff {
-		t.Fatalf("wrapping = %v, want off", e.entry.Wrapping)
+		t.Fatalf("the plain entry's wrapping = %v, want off in large-file mode", e.entry.Wrapping)
 	}
 	if e.statWords != 0 || e.statChars != 0 {
 		t.Fatalf("counts = %dw/%dc, want them skipped", e.statWords, e.statChars)
@@ -127,14 +127,19 @@ func TestLargeFileModeShedsCopyingChrome(t *testing.T) {
 	if strings.Contains(e.info.Text, "0w") {
 		t.Fatalf("status readout = %q, want no word count", e.info.Text)
 	}
-	if e.wrapItem.Checked || !e.wrapItem.Disabled {
-		t.Fatal("the word wrap item should be unchecked and disabled")
+	// Wrap is a preference, and large-file mode honours it like any other file.
+	if e.wrapItem.Checked != e.wrap || e.wrapItem.Disabled {
+		t.Fatalf("wrap item checked=%v disabled=%v, want checked=%v and usable",
+			e.wrapItem.Checked, e.wrapItem.Disabled, e.wrap)
 	}
-
-	// Turning wrap back on is refused rather than silently ignored.
+	before := e.code.wrap
 	e.ToggleWrap()
-	if e.entry.Wrapping != fyne.TextWrapOff || !strings.Contains(e.status.Text, "large-file mode") {
-		t.Fatalf("ToggleWrap in large-file mode: wrapping=%v status=%q", e.entry.Wrapping, e.status.Text)
+	if e.code.wrap == before || e.wrapItem.Checked != e.code.wrap {
+		t.Fatalf("ToggleWrap: code wrap=%v checked=%v", e.code.wrap, e.wrapItem.Checked)
+	}
+	e.ToggleWrap()
+	if e.code.wrap != before {
+		t.Fatal("toggling wrap back did not restore it")
 	}
 }
 
