@@ -54,18 +54,17 @@ type Editor struct {
 	status *widget.Label
 	info   *widget.Label
 
-	// Large-file mode: the document lives in doc, and largeEntry holds only the
-	// window the viewport is showing.
-	largeEntry *widget.Entry
-	view       *viewport
-	doc        *Document
+	// Large-file mode: the document lives in doc and code draws the lines on
+	// screen itself, so the whole buffer never reaches a widget.Entry.
+	code *codeView
+	doc  *Document
 
 	normalArea *fyne.Container
 	largeArea  *fyne.Container
 
-	windowFrom int    // document byte offset of the window's first byte
-	windowText string // text currently installed in largeEntry
-	editSeq    uint64
+	editSeq   uint64
+	lastInfo  string // last text set on the readout, to skip no-op relayouts
+	lastTitle string
 
 	findBar    *fyne.Container
 	findEntry  *widget.Entry
@@ -148,23 +147,25 @@ func New(a fyne.App, w fyne.Window) *Editor {
 	return e
 }
 
-// buffer is the entry that currently holds the document: the plain entry for a
-// normal file, the windowed one in large-file mode.
-func (e *Editor) buffer() *widget.Entry {
-	if e.largeFile && e.largeEntry != nil {
-		return e.largeEntry
+// buffer is the entry that holds a normal file's text. Large files never use it:
+// they are edited through codeView and the Document.
+func (e *Editor) buffer() *widget.Entry { return e.entry }
+
+// focusTarget is the widget that takes keyboard focus for the current mode.
+func (e *Editor) focusTarget() fyne.Focusable {
+	if e.largeFile && e.code != nil {
+		return e.code
 	}
 	return e.entry
 }
 
 // caretLineCol is the 1-based document position of the caret.
 func (e *Editor) caretLineCol() (line, col int) {
-	buf := e.buffer()
-	line, col = buf.CursorRow+1, buf.CursorColumn+1
-	if e.largeFile && e.view != nil {
-		line += e.view.top
+	if e.largeFile && e.code != nil {
+		return e.code.caret.row + 1, e.code.caret.col + 1
 	}
-	return line, col
+	buf := e.buffer()
+	return buf.CursorRow + 1, buf.CursorColumn + 1
 }
 
 // onCursorChanged keeps the readout and the window in step with the caret. It is
@@ -175,9 +176,20 @@ func (e *Editor) onCursorChanged() {
 		return
 	}
 	e.updateInfo()
-	if e.largeFile && e.view != nil {
-		e.view.caretMoved()
+}
+
+// onCodeChange is the large-file equivalent of a buffer change: the document has
+// already been edited, so this only updates the editor state around it.
+func (e *Editor) onCodeChange() {
+	if e.loading || e.restoring {
+		return
 	}
+	e.dropRedo()
+	e.dirty = true
+	e.editSeq++
+	e.updateTitle()
+	e.updateInfo()
+	e.maybeAutosave()
 }
 
 // applyOpenMode shows the widget that matches how the file was opened.
@@ -194,49 +206,24 @@ func (e *Editor) applyOpenMode() {
 	}
 	e.applyWrap()
 	if e.win != nil && e.win.Canvas() != nil {
-		e.win.Canvas().Focus(e.buffer())
+		e.win.Canvas().Focus(e.focusTarget())
 	}
 }
 
-// setWindowText installs a window of the document in the large-mode entry.
-func (e *Editor) setWindowText(text string, from int) {
-	if e.largeEntry == nil {
+// revealOffset makes a document offset visible and puts the caret there.
+func (e *Editor) revealOffset(off int) {
+	if e.doc != nil && e.code != nil {
+		e.code.setCaret(e.code.posAt(off))
 		return
 	}
-	e.loading = true
-	e.largeEntry.SetText(text)
-	e.loading = false
-	e.windowText = text
-	e.windowFrom = from
+	e.moveCursorTo(off)
 }
 
-// flushWindow commits the edits made in the window to the document. Every
-// document-wide operation (scroll refill, save, find, replace, go to line) calls
-// it first, so the document is never stale when it is read.
-func (e *Editor) flushWindow() {
-	if e.doc == nil || e.largeEntry == nil {
-		return
-	}
-	text := e.largeEntry.Text
-	if text == e.windowText {
-		return
-	}
-	e.doc.ReplaceRange(e.windowFrom, e.windowFrom+len(e.windowText), text)
-	e.windowText = text
-	if e.view != nil {
-		e.view.refreshScrollbar()
-	}
-}
-
-// refillFromDoc moves the window so that a document offset is visible and puts
-// the caret there.
-func (e *Editor) refillFromDoc(off int) {
-	if e.doc == nil || e.view == nil {
-		return
-	}
-	row, col := e.doc.RowColOf(off)
-	e.view.showLine(row, col)
-	e.updateInfo()
+// editDocument runs a change the editor makes to the document itself (find and
+// replace or a replacement) and treats it like typing.
+func (e *Editor) editDocument(change func()) {
+	change()
+	e.onCodeChange()
 }
 
 // BuildUI constructs the editor, toolbar, find bar, status line and menus, and
@@ -256,7 +243,7 @@ func (e *Editor) BuildUI() {
 	if e.win != nil {
 		e.win.SetOnDropped(e.onDropped)
 	}
-	e.win.Canvas().Focus(e.buffer())
+	e.win.Canvas().Focus(e.focusTarget())
 }
 
 func (e *Editor) buildEntry() {
@@ -265,16 +252,7 @@ func (e *Editor) buildEntry() {
 	e.entry.OnChanged = func(string) { e.onChanged() }
 	e.entry.OnCursorChanged = func() { e.onCursorChanged() }
 
-	e.largeEntry = widget.NewMultiLineEntry()
-	e.largeEntry.TextStyle = fyne.TextStyle{Monospace: true}
-	e.largeEntry.Wrapping = fyne.TextWrapOff
-	// With wrap off *and* scrolling off, Fyne lays the entry's content out
-	// directly instead of inside its own scroller. The viewport does the
-	// scrolling, so the entry must not scroll itself out from under it.
-	e.largeEntry.Scroll = fyne.ScrollNone
-	e.largeEntry.OnChanged = func(string) { e.onChanged() }
-	e.largeEntry.OnCursorChanged = func() { e.onCursorChanged() }
-	e.view = newViewport(e, e.largeEntry)
+	e.code = newCodeView(e)
 
 	e.status = widget.NewLabel("")
 	e.status.TextStyle = fyne.TextStyle{Monospace: true}
@@ -324,7 +302,7 @@ func (e *Editor) buildLayout() {
 	top := container.NewVBox(toolbar, e.findBar)
 	bottom := container.NewBorder(nil, nil, container.NewPadded(e.status), container.NewPadded(e.info))
 	e.normalArea = container.NewStack(container.NewScroll(e.entry))
-	e.largeArea = container.NewStack(e.view)
+	e.largeArea = container.NewStack(e.code)
 	e.largeArea.Hide()
 	center := container.NewStack(e.normalArea, e.largeArea)
 
@@ -477,7 +455,14 @@ func (e *Editor) updateTitle() {
 	if e.dirty {
 		mark = " •"
 	}
-	e.win.SetTitle(appTitle + " — " + name + mark)
+	title := appTitle + " — " + name + mark
+	// Setting the same title again makes the window do nothing useful, and the
+	// readout below is updated on every keystroke.
+	if title == e.lastTitle {
+		return
+	}
+	e.lastTitle = title
+	e.win.SetTitle(title)
 }
 
 // updateInfo refreshes the compact cursor/document readout in the status bar.
@@ -489,12 +474,18 @@ func (e *Editor) updateInfo() {
 	pos := fmt.Sprintf("%d:%d", line, col)
 	tail := fmt.Sprintf("%s · %s%s · %d%%", e.eolLabel(), e.indentLabel(),
 		e.encodingSuffix(), zoomPercent(e.themes.Zoom()))
+	var out string
 	if e.largeFile {
 		// No live counts: they would mean rescanning the whole buffer.
-		e.info.SetText(pos + " · " + tail + " · large")
+		out = pos + " · " + tail + " · large"
+	} else {
+		out = fmt.Sprintf("%s · %dw · %dc · %s", pos, e.statWords, e.statChars, tail)
+	}
+	if out == e.lastInfo {
 		return
 	}
-	e.info.SetText(fmt.Sprintf("%s · %dw · %dc · %s", pos, e.statWords, e.statChars, tail))
+	e.lastInfo = out
+	e.info.SetText(out)
 }
 
 // encodingSuffix names the file's encoding in the status bar, but only when it
@@ -589,6 +580,10 @@ func (e *Editor) refreshChrome() {
 // Undo reverts the last edit. Entry's native stack handles typing; the
 // snapshots cover the whole-buffer rewrites that clear it.
 func (e *Editor) Undo() {
+	if e.largeFile && e.code != nil {
+		e.code.Undo()
+		return
+	}
 	if e.entry == nil {
 		return
 	}
@@ -603,6 +598,10 @@ func (e *Editor) Undo() {
 // Redo reapplies the last undone edit, preferring Entry's stack for the same
 // reason Undo does.
 func (e *Editor) Redo() {
+	if e.largeFile && e.code != nil {
+		e.code.Redo()
+		return
+	}
 	if e.entry == nil {
 		return
 	}
@@ -615,7 +614,14 @@ func (e *Editor) Redo() {
 }
 
 // SelectAll selects the entire buffer.
-func (e *Editor) SelectAll() { e.buffer().TypedShortcut(&fyne.ShortcutSelectAll{}) }
+// SelectAll selects the whole document.
+func (e *Editor) SelectAll() {
+	if e.largeFile && e.code != nil {
+		e.code.selectAll()
+		return
+	}
+	e.entry.TypedShortcut(&fyne.ShortcutSelectAll{})
+}
 
 // clipboard routes a cut/copy/paste shortcut through the entry with the
 // window's clipboard attached.
@@ -628,7 +634,11 @@ func (e *Editor) clipboard(sc fyne.Shortcut) {
 	case *fyne.ShortcutPaste:
 		s.Clipboard = e.win.Clipboard()
 	}
-	e.buffer().TypedShortcut(sc)
+	if e.largeFile && e.code != nil {
+		e.code.TypedShortcut(sc)
+		return
+	}
+	e.entry.TypedShortcut(sc)
 }
 
 // ToggleWrap flips word wrapping and persists the choice.
@@ -689,6 +699,10 @@ func (e *Editor) indentString() string {
 
 // MoveLineUp swaps the caret's line with the one above it.
 func (e *Editor) MoveLineUp() {
+	if e.largeFile && e.code != nil {
+		e.code.moveLineUp()
+		return
+	}
 	buf := e.buffer()
 	text := buf.Text
 	if text == "" {
@@ -700,6 +714,10 @@ func (e *Editor) MoveLineUp() {
 
 // MoveLineDown swaps the caret's line with the one below it.
 func (e *Editor) MoveLineDown() {
+	if e.largeFile && e.code != nil {
+		e.code.moveLineDown()
+		return
+	}
 	buf := e.buffer()
 	text := buf.Text
 	if text == "" {
@@ -711,6 +729,10 @@ func (e *Editor) MoveLineDown() {
 
 // DuplicateLine copies the caret's line beneath itself.
 func (e *Editor) DuplicateLine() {
+	if e.largeFile && e.code != nil {
+		e.code.duplicateLine()
+		return
+	}
 	buf := e.buffer()
 	text := buf.Text
 	if text == "" {
@@ -722,6 +744,10 @@ func (e *Editor) DuplicateLine() {
 
 // IndentLine adds one indentation level to the caret's line.
 func (e *Editor) IndentLine() {
+	if e.largeFile && e.code != nil {
+		e.code.indent()
+		return
+	}
 	buf := e.buffer()
 	row := buf.CursorRow
 	indent := e.indentString()
@@ -731,6 +757,10 @@ func (e *Editor) IndentLine() {
 
 // OutdentLine removes one indentation level from the caret's line.
 func (e *Editor) OutdentLine() {
+	if e.largeFile && e.code != nil {
+		e.code.outdent()
+		return
+	}
 	buf := e.buffer()
 	row := buf.CursorRow
 	nt, removed := outdentLine(buf.Text, row, e.indentUseTabs, e.indentWidth)
@@ -762,10 +792,6 @@ func (e *Editor) applyWrap() {
 		e.entry.Wrapping = fyne.TextWrapWord
 	} else {
 		e.entry.Wrapping = fyne.TextWrapOff
-	}
-	if e.largeEntry != nil {
-		// The window is a slice of lines: wrapping it would break the line maths.
-		e.largeEntry.Wrapping = fyne.TextWrapOff
 	}
 	if e.wrapItem != nil {
 		e.wrapItem.Checked = wrap
@@ -817,8 +843,8 @@ func (e *Editor) CycleTheme() { e.SetTheme(e.themes.Next()) }
 // refreshLargeLayout re-measures the window after the text size changed: a line
 // is a different number of pixels tall, so the window has to be rebuilt.
 func (e *Editor) refreshLargeLayout() {
-	if e.largeFile && e.view != nil {
-		e.view.refill()
+	if e.largeFile && e.code != nil {
+		e.code.refreshMetrics()
 	}
 }
 

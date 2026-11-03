@@ -1,0 +1,1304 @@
+package editor
+
+import (
+	"math"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
+)
+
+const (
+	// caretWidth is how wide the caret is drawn.
+	caretWidth = 2
+	// clickSlop is how far from a cell boundary a click snaps to it.
+	clickSlop = 0.4
+	// minThumbHeight keeps the scrollbar thumb grabbable in a huge document.
+	minThumbHeight = 24
+	// dragScrollZone is the height of the band at the top and bottom of the view
+	// in which dragging a selection scrolls the document.
+	dragScrollZone = 16
+	// maxCodeUndoEdits and maxCodeUndoBytes cap the large-file undo history: each
+	// entry holds only the text it replaced, so thousands of small edits are
+	// cheap.
+	maxCodeUndoEdits = 2000
+	maxCodeUndoBytes = 8 << 20
+)
+
+// pos is a caret position: a 0-based document line and rune column.
+type pos struct{ row, col int }
+
+func (p pos) before(q pos) bool {
+	return p.row < q.row || (p.row == q.row && p.col < q.col)
+}
+
+// docEdit is one reversible change: the text that was replaced and the text that
+// replaced it.
+type docEdit struct {
+	off   int    // byte offset in the document
+	old   string // text that was removed
+	ins   string // text that was inserted
+	caret pos    // caret before the edit
+	after pos    // caret after the edit
+	at    time.Time
+}
+
+// codeView is the editing surface for large files: it renders the visible lines
+// of a Document itself, instead of handing the whole buffer to widget.Entry.
+//
+// widget.Entry lays out every line, keeps its own copy of the text and can only
+// be given a string, so it is the wrong tool for a large file. This widget draws
+// a few dozen canvas.Text objects for the lines on screen, keeps the caret as a
+// document offset and edits the Document directly, so cost tracks the size of
+// the screen rather than the size of the file. Selection, undo, find and replace
+// and the line operations all work over the whole document.
+type codeView struct {
+	widget.BaseWidget
+
+	ed  *Editor
+	doc *Document
+
+	top      int // first visible document row
+	xoffCell int // first visible cell (horizontal scroll)
+
+	caret  pos
+	anchor pos
+
+	shift, ctrl, alt bool // modifier state, tracked from KeyDown/KeyUp
+
+	focused  bool
+	dragging bool
+	dragBar  bool
+
+	undo      []docEdit
+	redo      []docEdit
+	undoBytes int
+
+	bg        *canvas.Rectangle
+	texts     []*canvas.Text
+	sels      []*canvas.Rectangle
+	caretRect *canvas.Rectangle
+	track     *canvas.Rectangle
+	thumb     *canvas.Rectangle
+	renderer_ *codeRenderer
+}
+
+func newCodeView(ed *Editor) *codeView {
+	v := &codeView{ed: ed}
+	v.bg = canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
+	v.caretRect = canvas.NewRectangle(theme.Color(theme.ColorNamePrimary))
+	v.track = canvas.NewRectangle(theme.Color(theme.ColorNameScrollBarBackground))
+	v.track.CornerRadius = 2
+	v.thumb = canvas.NewRectangle(theme.Color(theme.ColorNameScrollBar))
+	v.thumb.CornerRadius = 2
+	v.ExtendBaseWidget(v)
+	return v
+}
+
+// CreateRenderer builds the renderer that draws the visible lines.
+func (v *codeView) CreateRenderer() fyne.WidgetRenderer {
+	r := &codeRenderer{v: v}
+	v.renderer_ = r
+	return r
+}
+
+// setDoc installs a document and puts the view back at the top.
+func (v *codeView) setDoc(d *Document) {
+	v.doc = d
+	v.top, v.xoffCell = 0, 0
+	v.caret, v.anchor = pos{}, pos{}
+	v.undo, v.redo = nil, nil
+	v.undoBytes = 0
+	v.render()
+}
+
+// --- geometry ---------------------------------------------------------------
+
+// metrics returns the height of a line and the width of a character, measured
+// from the current theme exactly the way Fyne lays monospace text out.
+func (v *codeView) metrics() (lineH, charW float32) {
+	th := v.Theme()
+	size := th.Size(theme.SizeNameText)
+	style := fyne.TextStyle{Monospace: true}
+	return fyne.MeasureText("A", size, style).Height, fyne.MeasureText("A", size, style).Width
+}
+
+// inset is the padding between the widget edge and the first character column.
+func (v *codeView) inset() float32 {
+	return v.Theme().Size(theme.SizeNameInnerPadding)
+}
+
+// barWidth is the width of the scrollbar gutter.
+func (v *codeView) barWidth() float32 {
+	return v.Theme().Size(theme.SizeNameScrollBar) + v.Theme().Size(theme.SizeNamePadding)
+}
+
+// visibleLines is how many lines fit in the widget.
+func (v *codeView) visibleLines() int {
+	lineH, _ := v.metrics()
+	if lineH <= 0 {
+		return 1
+	}
+	n := int((v.Size().Height - 2*v.inset()) / lineH)
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// visibleCells is how many character cells fit beside the scrollbar.
+func (v *codeView) visibleCells() int {
+	_, charW := v.metrics()
+	if charW <= 0 {
+		return 1
+	}
+	n := int((v.Size().Width - 2*v.inset() - v.barWidth()) / charW)
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// docLines is the number of lines in the document.
+func (v *codeView) docLines() int {
+	if v.doc == nil {
+		return 1
+	}
+	return v.doc.LineCount()
+}
+
+// --- document coordinates --------------------------------------------------
+
+// lineLen is the length of a document line in runes, not counting the newline.
+func (v *codeView) lineLen(row int) int {
+	return utf8Count(v.doc.LineText(row))
+}
+
+// clampPos keeps a position inside the document.
+func (v *codeView) clampPos(p pos) pos {
+	if p.row < 0 {
+		p.row = 0
+	}
+	if p.row >= v.docLines() {
+		p.row = v.docLines() - 1
+	}
+	if p.col < 0 {
+		p.col = 0
+	}
+	if n := v.lineLen(p.row); p.col > n {
+		p.col = n
+	}
+	return p
+}
+
+// offset converts a caret position to a byte offset in the document.
+func (v *codeView) offset(p pos) int {
+	p = v.clampPos(p)
+	return v.doc.LineStart(p.row) + runeByteOffset(v.doc.LineText(p.row), p.col)
+}
+
+// posAt converts a byte offset to a caret position.
+func (v *codeView) posAt(off int) pos {
+	if v.doc == nil {
+		return pos{}
+	}
+	row, col := v.doc.RowColOf(off)
+	return pos{row: row, col: col}
+}
+
+// lineStartPos and lineEndPos are the ends of the caret's line.
+func (v *codeView) lineStartPos() pos { return pos{row: v.caret.row, col: 0} }
+func (v *codeView) lineEndPos() pos   { return pos{row: v.caret.row, col: v.lineLen(v.caret.row)} }
+
+// --- selection --------------------------------------------------------------
+
+// selRange returns the selection in document order and whether there is one.
+func (v *codeView) selRange() (from, to pos, ok bool) {
+	if v.anchor == v.caret {
+		return pos{}, pos{}, false
+	}
+	if v.anchor.before(v.caret) {
+		return v.anchor, v.caret, true
+	}
+	return v.caret, v.anchor, true
+}
+
+// HasSelection reports whether anything is selected.
+func (v *codeView) HasSelection() bool { return v.anchor != v.caret }
+
+// selectedText returns the selected text, or "".
+func (v *codeView) selectedText() string {
+	from, to, ok := v.selRange()
+	if !ok {
+		return ""
+	}
+	return v.doc.TextRange(v.offset(from), v.offset(to))
+}
+
+// selectAll selects the whole document.
+func (v *codeView) selectAll() {
+	v.anchor = pos{}
+	v.caret = pos{row: v.docLines() - 1, col: v.lineLen(v.docLines() - 1)}
+	v.followCaret()
+	v.render()
+}
+
+// clearSelection drops the selection, keeping the caret where it is.
+func (v *codeView) clearSelection() { v.anchor = v.caret }
+
+// --- editing ----------------------------------------------------------------
+
+// edit replaces [from, to) with ins and records it for undo. When merge is set
+// and the previous edit was an adjacent insertion, they are coalesced so that
+// typing a word is undone as a word rather than a character.
+func (v *codeView) edit(off int, del string, ins string, merge bool) {
+	if del == "" && ins == "" {
+		return
+	}
+	before := v.caret
+	if merge {
+		if n := len(v.undo); n > 0 {
+			last := &v.undo[n-1]
+			if last.old == "" && del == "" && last.off+len(last.ins) == off &&
+				time.Since(last.at) < time.Second {
+				last.ins += ins
+				last.at = time.Now()
+				v.doc.ReplaceRange(off, off, ins)
+				// The run now ends at the end of the merged text, not after off.
+				last.after = v.posAt(last.off + len(last.ins))
+				v.afterEdit(last.after)
+				return
+			}
+		}
+	}
+	v.doc.ReplaceRange(off, off+len(del), ins)
+	e := docEdit{off: off, old: del, ins: ins, caret: before, after: v.posAt(off + len(ins)), at: time.Now()}
+	v.undo = append(v.undo, e)
+	v.undoBytes += len(del) + len(ins)
+	v.redo = nil
+	v.trimUndo()
+	v.afterEdit(e.after)
+}
+
+// rawEdit applies a change and records it, leaving the caret to the caller.
+func (v *codeView) rawEdit(off int, del, ins string) {
+	v.doc.ReplaceRange(off, off+len(del), ins)
+	v.undo = append(v.undo, docEdit{
+		off: off, old: del, ins: ins,
+		caret: v.caret, after: v.caret, at: time.Now(),
+	})
+	v.undoBytes += len(del) + len(ins)
+	v.redo = nil
+	v.trimUndo()
+}
+
+// trimUndo keeps the history bounded.
+func (v *codeView) trimUndo() {
+	for len(v.undo) > maxCodeUndoEdits || (v.undoBytes > maxCodeUndoBytes && len(v.undo) > 1) {
+		v.undoBytes -= len(v.undo[0].old) + len(v.undo[0].ins)
+		v.undo = v.undo[1:]
+	}
+	for len(v.redo) > maxCodeUndoEdits {
+		v.redo = v.redo[1:]
+	}
+}
+
+// afterEdit moves the caret, tells the editor the document changed and redraws.
+func (v *codeView) afterEdit(p pos) {
+	v.caret = p
+	v.anchor = p
+	v.followCaret()
+	v.ed.onCodeChange()
+	v.ed.updateInfo()
+	v.render()
+}
+
+// insertText inserts s at the caret, replacing the selection.
+func (v *codeView) insertText(s string) {
+	if s == "" {
+		return
+	}
+	if from, to, ok := v.selRange(); ok {
+		v.anchor = to
+		v.caret = to
+		v.edit(v.offset(from), v.doc.TextRange(v.offset(from), v.offset(to)), s, false)
+		return
+	}
+	// Typing a single rune coalesces with the run before it.
+	merge := utf8.RuneCountInString(s) == 1 && !strings.ContainsRune(s, '\n')
+	v.edit(v.offset(v.caret), "", s, merge)
+}
+
+// deleteSelection removes the selection if there is one, reporting whether it
+// did.
+func (v *codeView) deleteSelection() bool {
+	from, to, ok := v.selRange()
+	if !ok {
+		return false
+	}
+	v.anchor = to
+	v.caret = to
+	v.edit(v.offset(from), v.doc.TextRange(v.offset(from), v.offset(to)), "", false)
+	return true
+}
+
+// backspace deletes the character before the caret, or joins two lines.
+func (v *codeView) backspace() {
+	if v.deleteSelection() {
+		return
+	}
+	p := v.caret
+	if p.col > 0 {
+		start := pos{row: p.row, col: p.col - 1}
+		off := v.offset(start)
+		v.anchor = start
+		v.caret = start
+		v.edit(off, v.doc.TextRange(off, v.offset(p)), "", v.caret.col == start.col)
+		return
+	}
+	if p.row == 0 {
+		return
+	}
+	prev := pos{row: p.row - 1, col: v.lineLen(p.row - 1)}
+	off := v.offset(prev)
+	v.anchor = prev
+	v.caret = prev
+	v.edit(off, v.doc.TextRange(off, v.offset(p)), "", false)
+}
+
+// deleteForward deletes the character after the caret, or joins the next line.
+func (v *codeView) deleteForward() {
+	if v.deleteSelection() {
+		return
+	}
+	p := v.caret
+	if p.col < v.lineLen(p.row) {
+		end := pos{row: p.row, col: p.col + 1}
+		off := v.offset(p)
+		v.edit(off, v.doc.TextRange(off, v.offset(end)), "", false)
+		return
+	}
+	if p.row >= v.docLines()-1 {
+		return
+	}
+	end := pos{row: p.row + 1, col: 0}
+	off := v.offset(p)
+	v.edit(off, v.doc.TextRange(off, v.offset(end)), "", false)
+}
+
+// indents the caret's line by one level.
+func (v *codeView) indent() {
+	indent := v.ed.indentString()
+	v.anchor = pos{row: v.caret.row, col: v.caret.col + utf8Count(indent)}
+	v.caret = v.anchor
+	off := v.doc.LineStart(v.anchor.row)
+	v.edit(off, "", indent, false)
+}
+
+// outdents the caret's line by one level, if it starts with whitespace.
+func (v *codeView) outdent() {
+	line := v.doc.LineText(v.caret.row)
+	removed := 0
+	var width int
+	for _, r := range line {
+		if r == ' ' {
+			width++
+		} else if r == '\t' {
+			width += v.ed.indentWidth - width%v.ed.indentWidth
+		} else {
+			break
+		}
+		removed++
+		if width >= v.ed.indentWidth {
+			break
+		}
+	}
+	if removed == 0 {
+		return
+	}
+	off := v.doc.LineStart(v.caret.row)
+	col := v.caret.col - removed
+	if col < 0 {
+		col = 0
+	}
+	v.anchor = pos{row: v.caret.row, col: col}
+	v.caret = v.anchor
+	v.edit(off, line[:runeByteOffset(line, removed)], "", false)
+}
+
+// moveLineUp swaps the caret's line with the one above it.
+func (v *codeView) moveLineUp() {
+	row := v.caret.row
+	if row == 0 {
+		return
+	}
+	v.swapLines(row-1, row)
+	v.caret.row--
+	v.anchor = v.caret
+	v.followCaret()
+	v.ed.onCodeChange()
+	v.render()
+}
+
+// moveLineDown swaps the caret's line with the one below it.
+func (v *codeView) moveLineDown() {
+	row := v.caret.row
+	if row >= v.docLines()-1 {
+		return
+	}
+	v.swapLines(row, row+1)
+	v.caret.row++
+	v.anchor = v.caret
+	v.followCaret()
+	v.ed.onCodeChange()
+	v.render()
+}
+
+// swapLines exchanges two adjacent lines in one reversible edit.
+func (v *codeView) swapLines(a, b int) {
+	start := v.doc.LineStart(a)
+	end := v.doc.LineStart(b + 1)
+	text := v.doc.TextRange(start, end)
+	la := v.doc.LineText(a)
+	lb := v.doc.LineText(b)
+	swapped := lb + "\n" + la
+	if b < v.docLines()-1 {
+		swapped += "\n"
+	}
+	before := v.caret
+	v.rawEdit(start, text, swapped)
+	v.caret = before
+	v.anchor = before
+}
+
+// duplicateLine inserts a copy of the caret's line below it.
+func (v *codeView) duplicateLine() {
+	row := v.caret.row
+	line := v.doc.LineText(row)
+	off := v.doc.LineStart(row) + len(line)
+	v.rawEdit(off, "", "\n"+line)
+	v.caret = pos{row: row + 1, col: v.caret.col}
+	v.anchor = v.caret
+	v.followCaret()
+	v.ed.onCodeChange()
+	v.ed.updateInfo()
+	v.render()
+}
+
+// --- undo -------------------------------------------------------------------
+
+// Undo reverts the last edit.
+func (v *codeView) Undo() {
+	n := len(v.undo)
+	if n == 0 {
+		v.ed.setStatus("nothing to undo")
+		return
+	}
+	e := v.undo[n-1]
+	v.undo = v.undo[:n-1]
+	v.undoBytes -= len(e.old) + len(e.ins)
+	v.doc.ReplaceRange(e.off, e.off+len(e.ins), e.old)
+	v.redo = append(v.redo, e)
+	v.caret, v.anchor = e.caret, e.caret
+	v.followCaret()
+	v.ed.onCodeChange()
+	v.render()
+}
+
+// Redo reapplies the last undone edit.
+func (v *codeView) Redo() {
+	n := len(v.redo)
+	if n == 0 {
+		v.ed.setStatus("nothing to redo")
+		return
+	}
+	e := v.redo[n-1]
+	v.redo = v.redo[:n-1]
+	v.doc.ReplaceRange(e.off, e.off+len(e.old), e.ins)
+	v.undo = append(v.undo, e)
+	v.undoBytes += len(e.old) + len(e.ins)
+	v.caret, v.anchor = e.after, e.after
+	v.followCaret()
+	v.ed.onCodeChange()
+	v.render()
+}
+
+// --- caret movement ---------------------------------------------------------
+
+// setCaret moves the caret and scrolls it into view.
+func (v *codeView) setCaret(p pos) {
+	v.caret = v.clampPos(p)
+	v.anchor = v.caret
+	v.followCaret()
+	v.ed.updateInfo()
+	v.render()
+}
+
+// moveCaret moves by rows and columns, extending the selection when extend is
+// set. Moving up or down keeps the column where it was, clamped to the line.
+func (v *codeView) moveCaret(dRow, dCol int, extend bool) {
+	p := v.caret
+	if dRow != 0 {
+		p.row += dRow
+		if p.row < 0 {
+			p.row = 0
+		}
+		if p.row >= v.docLines() {
+			p.row = v.docLines() - 1
+		}
+	}
+	if dRow == 0 && dCol < 0 && p.col == 0 && p.row > 0 {
+		// Left at the start of a line continues at the end of the one above.
+		v.moveTo(pos{row: p.row - 1, col: v.lineLen(p.row - 1)}, extend)
+		return
+	}
+	if dRow == 0 && dCol > 0 && p.col >= v.lineLen(p.row) && p.row < v.docLines()-1 {
+		// Right at the end of a line continues at the start of the next.
+		v.moveTo(pos{row: p.row + 1, col: 0}, extend)
+		return
+	}
+	p.col += dCol
+	p = v.clampPos(p)
+	v.moveTo(p, extend)
+}
+
+// moveTo applies a new caret position, extending or dropping the selection.
+func (v *codeView) moveTo(p pos, extend bool) {
+	if v.caret == p && !extend {
+		return
+	}
+	if extend {
+		if v.anchor == v.caret {
+			v.anchor = v.caret // start a new selection here
+		}
+	} else {
+		v.anchor = p
+	}
+	v.caret = p
+	v.followCaret()
+	v.ed.updateInfo()
+	v.render()
+}
+
+// wordEdge moves the caret to the next word boundary in the given direction.
+func (v *codeView) wordEdge(dir int, extend bool) {
+	p := v.caret
+	row := p.row
+	line := v.doc.LineText(row)
+	runes := []rune(line)
+	col := p.col
+
+	isWord := func(r rune) bool {
+		return r == '_' || ('0' <= r && r <= '9') || ('a' <= r && r <= 'z') ||
+			('A' <= r && r <= 'Z') || r > 127
+	}
+
+	if dir > 0 {
+		if col >= len(runes) {
+			if row < v.docLines()-1 {
+				v.moveTo(pos{row: row + 1, col: 0}, extend)
+			}
+			return
+		}
+		// Skip the word under the caret, then the separators after it.
+		for col < len(runes) && isWord(runes[col]) {
+			col++
+		}
+		for col < len(runes) && !isWord(runes[col]) {
+			col++
+		}
+		v.moveTo(pos{row: row, col: col}, extend)
+		return
+	}
+
+	if col == 0 {
+		if row > 0 {
+			v.moveTo(pos{row: row - 1, col: v.lineLen(row - 1)}, extend)
+		}
+		return
+	}
+	// Skip the separators before the caret, then the word before them.
+	col--
+	for col > 0 && !isWord(runes[col]) {
+		col--
+	}
+	if !isWord(runes[col]) {
+		col++
+	}
+	for col > 0 && isWord(runes[col-1]) {
+		col--
+	}
+	v.moveTo(pos{row: row, col: col}, extend)
+}
+
+// followCaret scrolls the document so the caret is visible.
+func (v *codeView) followCaret() {
+	vis := v.visibleLines()
+	if v.caret.row < v.top {
+		v.top = v.caret.row
+	}
+	if v.caret.row >= v.top+vis {
+		v.top = v.caret.row - vis + 1
+	}
+	if max := v.docLines() - vis; v.top > max {
+		v.top = max
+	}
+	if v.top < 0 {
+		v.top = 0
+	}
+
+	cell := v.cellOf(v.caret)
+	cells := v.visibleCells()
+	if cell < v.xoffCell {
+		v.xoffCell = cell
+	}
+	if cell >= v.xoffCell+cells {
+		v.xoffCell = cell - cells + 1
+	}
+	if v.xoffCell < 0 {
+		v.xoffCell = 0
+	}
+}
+
+// scrollLines moves the view by delta lines.
+func (v *codeView) scrollLines(delta int) {
+	if v.doc == nil || delta == 0 {
+		return
+	}
+	vis := v.visibleLines()
+	max := v.docLines() - vis
+	if max < 0 {
+		max = 0
+	}
+	v.top += delta
+	if v.top > max {
+		v.top = max
+	}
+	if v.top < 0 {
+		v.top = 0
+	}
+	v.render()
+}
+
+// gotoLine moves the caret to a 0-based line and rune column.
+func (v *codeView) gotoLine(row, col int) {
+	v.setCaret(pos{row: row, col: col})
+}
+
+// --- cells ------------------------------------------------------------------
+
+// cellOf is the display column of a position, with tabs expanded.
+func (v *codeView) cellOf(p pos) int {
+	line := v.doc.LineText(p.row)
+	cells, n := 0, 0
+	for _, r := range line {
+		if n >= p.col {
+			break
+		}
+		if r == '\t' {
+			cells += v.ed.indentWidth - cells%v.ed.indentWidth
+		} else {
+			cells++
+		}
+		n++
+	}
+	return cells
+}
+
+// colAtCell is the rune column nearest to a display cell, used for clicks.
+func (v *codeView) colAtCell(row, cell int) int {
+	line := v.doc.LineText(row)
+	cells, col := 0, 0
+	for _, r := range line {
+		w := 1
+		if r == '\t' {
+			w = v.ed.indentWidth - cells%v.ed.indentWidth
+		}
+		if cells+w > cell {
+			// Inside or before this character: snap to the nearer boundary.
+			if float32(cell-cells) > float32(w)*clickSlop {
+				col++
+			}
+			return col
+		}
+		cells += w
+		col++
+	}
+	return col
+}
+
+// lineDisplay returns the part of a line that starts at or after fromCell, laid
+// out with tabs expanded, together with the cell it starts at.
+func (v *codeView) lineDisplay(row, fromCell, maxCells int) (text string, startCell int, endCell int) {
+	line := v.doc.LineText(row)
+	var b strings.Builder
+	cells := 0
+	started := false
+	for _, r := range line {
+		w := 1
+		if r == '\t' {
+			w = v.ed.indentWidth - cells%v.ed.indentWidth
+		}
+		if cells+w <= fromCell {
+			cells += w
+			continue
+		}
+		if !started {
+			startCell, started = cells, true
+		}
+		if cells-startCell >= maxCells {
+			return b.String(), startCell, cells
+		}
+		if r == '\t' {
+			for i := 0; i < w; i++ {
+				b.WriteByte(' ')
+			}
+		} else {
+			b.WriteRune(r)
+		}
+		cells += w
+	}
+	if !started {
+		startCell = cells
+	}
+	return b.String(), startCell, cells
+}
+
+// posAtPoint is the caret position nearest to a point in widget coordinates.
+func (v *codeView) posAtPoint(p fyne.Position) pos {
+	lineH, charW := v.metrics()
+	if lineH <= 0 || charW <= 0 {
+		return v.caret
+	}
+	row := v.top + int((p.Y-v.inset())/lineH)
+	cell := v.xoffCell + int(math.Round(float64((p.X-v.inset())/charW)))
+	// A click in the padding above or below the text still lands on a line.
+	if row < v.top {
+		row = v.top
+	}
+	if last := v.top + v.visibleLines() - 1; row > last {
+		row = last
+	}
+	return pos{row: row, col: v.colAtCell(row, cell)}
+}
+
+// --- rendering --------------------------------------------------------------
+
+// render redraws the visible lines, the selection, the caret and the scrollbar.
+func (v *codeView) render() {
+	if v.renderer_ == nil {
+		return
+	}
+	v.renderer_.sync()
+}
+
+// refreshMetrics re-measures after a theme or zoom change and redraws.
+func (v *codeView) refreshMetrics() {
+	v.followCaret()
+	v.render()
+}
+
+// --- widget interface -------------------------------------------------------
+
+// MinSize is the smallest sensible size for the view.
+func (v *codeView) MinSize() fyne.Size {
+	lineH, _ := v.metrics()
+	return fyne.NewSize(120, lineH*4)
+}
+
+// Scrolled moves the view with the wheel; Fyne also treats a Scrollable as a
+// clip region, which is what keeps the lines out of the scrollbar gutter.
+func (v *codeView) Scrolled(ev *fyne.ScrollEvent) {
+	if ev.Scrolled.DY == 0 && ev.Scrolled.DX != 0 {
+		_, charW := v.metrics()
+		if charW > 0 {
+			v.xoffCell -= int(ev.Scrolled.DX / charW)
+			if v.xoffCell < 0 {
+				v.xoffCell = 0
+			}
+			v.render()
+		}
+		return
+	}
+	lineH, _ := v.metrics()
+	if lineH <= 0 {
+		return
+	}
+	if n := int(-ev.Scrolled.DY / lineH); n != 0 {
+		v.scrollLines(n)
+	}
+}
+
+// AcceptsTab takes the Tab key instead of moving focus.
+func (v *codeView) AcceptsTab() bool { return true }
+
+// FocusGained starts drawing the caret.
+func (v *codeView) FocusGained() {
+	v.focused = true
+	v.render()
+}
+
+// FocusLost stops drawing the caret and forgets any held modifier: a key
+// released while another window has focus would otherwise stay stuck down.
+func (v *codeView) FocusLost() {
+	v.focused = false
+	v.shift, v.ctrl, v.alt = false, false, false
+	v.render()
+}
+
+// Cursor is the text cursor over the editing surface.
+func (v *codeView) Cursor() desktop.Cursor { return desktop.TextCursor }
+
+// TypedRune inserts a character at the caret.
+func (v *codeView) TypedRune(r rune) {
+	if v.doc == nil || v.ctrl || v.alt {
+		return
+	}
+	v.insertText(string(r))
+}
+
+// TypedKey handles the navigation and editing keys.
+func (v *codeView) TypedKey(ev *fyne.KeyEvent) {
+	if v.doc == nil {
+		return
+	}
+	extend := v.shift
+	switch ev.Name {
+	case fyne.KeyEnter, fyne.KeyReturn:
+		v.insertText("\n")
+	case fyne.KeyTab:
+		if v.shift {
+			v.outdent()
+		} else {
+			v.insertText(v.ed.indentString())
+		}
+	case fyne.KeyBackspace:
+		v.backspace()
+	case fyne.KeyDelete:
+		v.deleteForward()
+	case fyne.KeyLeft:
+		if v.ctrl || v.alt {
+			v.wordEdge(-1, extend)
+		} else {
+			v.moveCaret(0, -1, extend)
+		}
+	case fyne.KeyRight:
+		if v.ctrl || v.alt {
+			v.wordEdge(1, extend)
+		} else {
+			v.moveCaret(0, 1, extend)
+		}
+	case fyne.KeyUp:
+		if v.ctrl {
+			v.moveTo(pos{}, extend)
+		} else {
+			v.moveCaret(-1, 0, extend)
+		}
+	case fyne.KeyDown:
+		if v.ctrl {
+			last := v.docLines() - 1
+			v.moveTo(pos{row: last, col: v.lineLen(last)}, extend)
+		} else {
+			v.moveCaret(1, 0, extend)
+		}
+	case fyne.KeyHome:
+		if v.ctrl {
+			v.moveTo(pos{}, extend)
+		} else {
+			v.moveTo(v.lineStartPos(), extend)
+		}
+	case fyne.KeyEnd:
+		if v.ctrl {
+			last := v.docLines() - 1
+			v.moveTo(pos{row: last, col: v.lineLen(last)}, extend)
+		} else {
+			v.moveTo(v.lineEndPos(), extend)
+		}
+	case fyne.KeyPageUp:
+		v.moveCaret(-v.visibleLines(), 0, extend)
+	case fyne.KeyPageDown:
+		v.moveCaret(v.visibleLines(), 0, extend)
+	}
+}
+
+// KeyDown tracks the modifier keys, which is how shift-selection and the
+// word-wise shortcuts know what is held.
+func (v *codeView) KeyDown(ev *fyne.KeyEvent) {
+	switch ev.Name {
+	case desktop.KeyShiftLeft, desktop.KeyShiftRight:
+		v.shift = true
+	case desktop.KeyControlLeft, desktop.KeyControlRight:
+		v.ctrl = true
+	case desktop.KeyAltLeft, desktop.KeyAltRight:
+		v.alt = true
+	}
+}
+
+// KeyUp clears the modifier state.
+func (v *codeView) KeyUp(ev *fyne.KeyEvent) {
+	switch ev.Name {
+	case desktop.KeyShiftLeft, desktop.KeyShiftRight:
+		v.shift = false
+	case desktop.KeyControlLeft, desktop.KeyControlRight:
+		v.ctrl = false
+	case desktop.KeyAltLeft, desktop.KeyAltRight:
+		v.alt = false
+	}
+}
+
+// TypedShortcut handles the clipboard and undo shortcuts.
+func (v *codeView) TypedShortcut(sc fyne.Shortcut) {
+	switch sc.(type) {
+	case *fyne.ShortcutCopy:
+		v.copySelection()
+	case *fyne.ShortcutCut:
+		if v.copySelection() {
+			v.deleteSelection()
+		}
+	case *fyne.ShortcutPaste:
+		v.paste()
+	case *fyne.ShortcutSelectAll:
+		v.selectAll()
+	case *fyne.ShortcutUndo:
+		v.Undo()
+	case *fyne.ShortcutRedo:
+		v.Redo()
+	}
+}
+
+// copySelection puts the selected text on the clipboard.
+func (v *codeView) copySelection() bool {
+	text := v.selectedText()
+	if text == "" {
+		return false
+	}
+	v.ed.app.Clipboard().SetContent(text)
+	return true
+}
+
+// paste inserts the clipboard at the caret.
+func (v *codeView) paste() {
+	text := v.ed.app.Clipboard().Content()
+	if text == "" {
+		return
+	}
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	v.insertText(text)
+}
+
+// --- mouse ------------------------------------------------------------------
+
+// Tapped places the caret where the pointer is.
+func (v *codeView) Tapped(ev *fyne.PointEvent) {
+	if v.doc == nil || ev.Position.X >= v.Size().Width-v.barWidth() {
+		return
+	}
+	v.dragging = false
+	v.setCaret(v.posAtPoint(ev.Position))
+}
+
+// DoubleTapped selects the word under the pointer.
+func (v *codeView) DoubleTapped(ev *fyne.PointEvent) {
+	if v.doc == nil {
+		return
+	}
+	v.setCaret(v.posAtPoint(ev.Position))
+	line := v.doc.LineText(v.caret.row)
+	runes := []rune(line)
+	col := v.caret.col
+	isWord := func(r rune) bool {
+		return r == '_' || ('0' <= r && r <= '9') || ('a' <= r && r <= 'z') ||
+			('A' <= r && r <= 'Z') || r > 127
+	}
+	if col >= len(runes) || !isWord(runes[col]) {
+		return
+	}
+	start := col
+	for start > 0 && isWord(runes[start-1]) {
+		start--
+	}
+	end := col
+	for end < len(runes) && isWord(runes[end]) {
+		end++
+	}
+	v.anchor = pos{row: v.caret.row, col: start}
+	v.caret = pos{row: v.caret.row, col: end}
+	v.render()
+}
+
+// MouseDown decides whether this drag is a selection or a scrollbar drag.
+func (v *codeView) MouseDown(ev *desktop.MouseEvent) {
+	v.dragging = true
+	v.dragBar = ev.Position.X >= v.Size().Width-v.barWidth()
+	if v.dragBar {
+		v.dragToBar(ev.Position.Y)
+		return
+	}
+	v.setCaret(v.posAtPoint(ev.Position))
+}
+
+// MouseUp ends a drag.
+func (v *codeView) MouseUp(*desktop.MouseEvent) {
+	v.dragging = false
+}
+
+// Dragged extends the selection or drags the scrollbar.
+func (v *codeView) Dragged(ev *fyne.DragEvent) {
+	if v.doc == nil {
+		return
+	}
+	if v.dragBar {
+		v.dragToBar(ev.Position.Y)
+		return
+	}
+	if !v.dragging {
+		return
+	}
+	// Dragging past the top or bottom edge scrolls, so a selection can run off
+	// the visible area.
+	lineH, _ := v.metrics()
+	if lineH > 0 {
+		if ev.Position.Y < dragScrollZone {
+			v.scrollLines(-1)
+		} else if ev.Position.Y > v.Size().Height-dragScrollZone {
+			v.scrollLines(1)
+		}
+	}
+	v.caret = v.clampPos(v.posAtPoint(ev.Position))
+	v.render()
+}
+
+// DragEnd finishes a selection drag.
+func (v *codeView) DragEnd() {
+	v.dragging = false
+}
+
+// dragToBar scrolls so the scrollbar thumb sits under y.
+func (v *codeView) dragToBar(y float32) {
+	span := v.Size().Height - v.thumbHeight()
+	if span <= 0 {
+		return
+	}
+	max := v.docLines() - v.visibleLines()
+	if max <= 0 {
+		return
+	}
+	top := int(float32(max) * (y - v.thumbHeight()/2) / span)
+	v.top = top
+	if v.top > max {
+		v.top = max
+	}
+	if v.top < 0 {
+		v.top = 0
+	}
+	v.render()
+}
+
+// thumbHeight is how tall the scrollbar thumb is drawn.
+func (v *codeView) thumbHeight() float32 {
+	total := float32(v.docLines())
+	vis := float32(v.visibleLines())
+	h := v.Size().Height * vis / total
+	if h < minThumbHeight {
+		h = minThumbHeight
+	}
+	if h > v.Size().Height {
+		h = v.Size().Height
+	}
+	return h
+}
+
+// --- renderer ---------------------------------------------------------------
+
+// codeRenderer draws the visible lines of the document.
+type codeRenderer struct {
+	v       *codeView
+	objects []fyne.CanvasObject
+}
+
+// Layout repositions everything; the widget does the work in sync.
+func (r *codeRenderer) Layout(fyne.Size) { r.sync() }
+
+// MinSize mirrors the widget's minimum size.
+func (r *codeRenderer) MinSize() fyne.Size { return r.v.MinSize() }
+
+// Refresh re-reads the theme colours and redraws.
+func (r *codeRenderer) Refresh() {
+	th := r.v.Theme()
+	variant := r.v.ed.app.Settings().ThemeVariant()
+	v := r.v
+	v.bg.FillColor = th.Color(theme.ColorNameInputBackground, variant)
+	v.caretRect.FillColor = th.Color(theme.ColorNamePrimary, variant)
+	v.track.FillColor = th.Color(theme.ColorNameScrollBarBackground, variant)
+	v.thumb.FillColor = th.Color(theme.ColorNameScrollBar, variant)
+	v.bg.Refresh()
+	v.caretRect.Refresh()
+	v.track.Refresh()
+	v.thumb.Refresh()
+	for _, t := range v.texts {
+		t.Color = th.Color(theme.ColorNameForeground, variant)
+	}
+	for _, s := range v.sels {
+		s.FillColor = th.Color(theme.ColorNameSelection, variant)
+	}
+	r.sync()
+}
+
+// Objects lists the drawing order: background, selection, text, caret, bars.
+func (r *codeRenderer) Objects() []fyne.CanvasObject { return r.objects }
+
+// Destroy drops the renderer's reference to the widget.
+func (r *codeRenderer) Destroy() {}
+
+// ensure grows the object pools and rebuilds the draw order.
+func (r *codeRenderer) ensure(lines int) {
+	v := r.v
+	th := v.Theme()
+	variant := v.ed.app.Settings().ThemeVariant()
+	size := th.Size(theme.SizeNameText)
+
+	for len(v.texts) < lines {
+		t := canvas.NewText("", th.Color(theme.ColorNameForeground, variant))
+		t.TextStyle = fyne.TextStyle{Monospace: true}
+		t.TextSize = size
+		v.texts = append(v.texts, t)
+	}
+	for len(v.sels) < lines {
+		v.sels = append(v.sels, canvas.NewRectangle(th.Color(theme.ColorNameSelection, variant)))
+	}
+
+	r.objects = r.objects[:0]
+	r.objects = append(r.objects, v.bg)
+	for _, s := range v.sels {
+		r.objects = append(r.objects, s)
+	}
+	for _, t := range v.texts {
+		r.objects = append(r.objects, t)
+	}
+	r.objects = append(r.objects, v.caretRect, v.track, v.thumb)
+}
+
+// sync lays out and fills the visible lines.
+func (r *codeRenderer) sync() {
+	v := r.v
+	if v.doc == nil {
+		return
+	}
+	lineH, charW := v.metrics()
+	if lineH <= 0 || charW <= 0 {
+		return
+	}
+	vis := v.visibleLines()
+	r.ensure(vis + 1)
+
+	inset := v.inset()
+	width := v.Size().Width - inset
+	v.bg.Move(fyne.NewPos(0, 0))
+	v.bg.Resize(v.Size())
+
+	for i, t := range v.texts {
+		row := v.top + i
+		if i >= vis || row >= v.docLines() {
+			t.Hide()
+			continue
+		}
+		t.Show()
+		text, startCell, _ := v.lineDisplay(row, v.xoffCell, v.visibleCells()+1)
+		if t.Text != text {
+			t.Text = text
+			t.Refresh()
+		}
+		at := fyne.NewPos(inset+float32(startCell-v.xoffCell)*charW, inset+float32(i)*lineH)
+		if t.Position() != at {
+			t.Move(at)
+		}
+		size := fyne.NewSize(width, lineH)
+		if t.Size() != size {
+			t.Resize(size)
+		}
+	}
+
+	r.syncSelection(vis, lineH, charW, inset)
+	r.syncCaret(lineH, charW, inset)
+
+	// Scrollbar.
+	size := v.Size()
+	barW := v.barWidth()
+	trackX := size.Width - barW
+	v.track.Move(fyne.NewPos(trackX, 0))
+	v.track.Resize(fyne.NewSize(barW, size.Height))
+	if v.docLines() <= vis {
+		v.thumb.Hide()
+	} else {
+		v.thumb.Show()
+		h := v.thumbHeight()
+		max := float32(v.docLines() - vis)
+		y := (size.Height - h) * float32(v.top) / max
+		v.thumb.Move(fyne.NewPos(trackX, y))
+		v.thumb.Resize(fyne.NewSize(barW, h))
+	}
+}
+
+// syncSelection draws one highlight per visible row that has selected text.
+func (r *codeRenderer) syncSelection(vis int, lineH, charW, inset float32) {
+	v := r.v
+	for _, s := range v.sels {
+		s.Hide()
+	}
+	from, to, ok := v.selRange()
+	if !ok {
+		return
+	}
+	for i := 0; i < vis; i++ {
+		row := v.top + i
+		if row < from.row || row > to.row || row >= v.docLines() {
+			continue
+		}
+		startCol := 0
+		if row == from.row {
+			startCol = from.col
+		}
+		endCol := v.lineLen(row) + 1 // include the newline
+		if row == to.row {
+			endCol = to.col
+		}
+		startCell := v.cellOf(pos{row: row, col: startCol})
+		endCell := v.cellOf(pos{row: row, col: min(endCol, v.lineLen(row))})
+		if endCol > v.lineLen(row) {
+			endCell++ // the newline cell
+		}
+		if endCell <= startCell {
+			continue
+		}
+		rect := v.sels[i]
+		rect.Show()
+		x := inset + float32(startCell-v.xoffCell)*charW
+		rect.Move(fyne.NewPos(x, inset+float32(i)*lineH))
+		rect.Resize(fyne.NewSize(float32(endCell-startCell)*charW, lineH))
+	}
+}
+
+// syncCaret draws the caret block.
+func (r *codeRenderer) syncCaret(lineH, charW, inset float32) {
+	v := r.v
+	if !v.focused {
+		v.caretRect.Hide()
+		return
+	}
+	cell := v.cellOf(v.caret)
+	x := inset + float32(cell-v.xoffCell)*charW
+	y := inset + float32(v.caret.row-v.top)*lineH
+	if v.caret.row < v.top || v.caret.row >= v.top+v.visibleLines() {
+		v.caretRect.Hide()
+		return
+	}
+	v.caretRect.Show()
+	v.caretRect.Move(fyne.NewPos(x, y))
+	v.caretRect.Resize(fyne.NewSize(caretWidth, lineH))
+}

@@ -168,7 +168,7 @@ func (e *Editor) ShowFind() {
 // HideFind hides the find & replace bar and returns focus to the editor.
 func (e *Editor) HideFind() {
 	e.findBar.Hide()
-	e.win.Canvas().Focus(e.buffer())
+	e.win.Canvas().Focus(e.focusTarget())
 }
 
 // matcher builds the matcher for the current find-bar state, reporting syntax
@@ -240,9 +240,8 @@ func (e *Editor) ReplaceCurrent() {
 	}
 
 	repl := m.expand(text, start, e.replEntry.Text)
-	if e.doc != nil {
-		e.editDocument(func() { e.doc.ReplaceRange(start, start+n, repl) })
-		e.refillFromDoc(start + len(repl))
+	if e.doc != nil && e.code != nil {
+		e.code.edit(start, text[start:start+n], repl, false)
 	} else {
 		e.replaceRange(start, n, repl)
 		e.moveCursorTo(start + len(repl))
@@ -274,9 +273,10 @@ func (e *Editor) ReplaceAll() {
 	if at > len(out) {
 		at = len(out)
 	}
-	if e.doc != nil {
-		e.editDocument(func() { e.doc.ReplaceAll(out) })
-		e.refillFromDoc(at)
+	if e.doc != nil && e.code != nil {
+		// One undoable edit, even though the whole document is replaced.
+		e.code.edit(0, text, out, false)
+		e.code.setCaret(e.code.posAt(at))
 	} else {
 		e.replaceRange(0, len(text), out)
 		e.moveCursorTo(at)
@@ -383,11 +383,9 @@ func (e *Editor) gotoLine(n int) {
 }
 
 // searchText is the text find and replace work on: the document for a large
-// file, the entry otherwise. Window edits are committed first so a search never
-// misses what was just typed.
+// file, the entry otherwise.
 func (e *Editor) searchText() string {
 	if e.doc != nil {
-		e.flushWindow()
 		return e.doc.Text()
 	}
 	return e.entry.Text
@@ -395,38 +393,15 @@ func (e *Editor) searchText() string {
 
 // caretOffset is the caret's byte offset into text.
 func (e *Editor) caretOffset(text string) int {
-	if e.doc != nil {
-		return e.doc.LineStart(e.view.top) +
-			runeOffset(e.largeEntry.Text, e.largeEntry.CursorRow, e.largeEntry.CursorColumn)
+	if e.doc != nil && e.code != nil {
+		return e.code.offset(e.code.caret)
 	}
 	return runeOffset(text, e.entry.CursorRow, e.entry.CursorColumn)
 }
 
-// editDocument runs a change the editor makes to the document itself (find and
-// replace) and treats it like typing: the buffer becomes dirty and autosave gets
-// a chance to run.
-func (e *Editor) editDocument(change func()) {
-	change()
-	e.dirty = true
-	e.editSeq++
-	e.updateTitle()
-	e.updateInfo()
-	e.maybeAutosave()
-}
-
-// revealOffset makes a document offset visible and puts the caret there.
-func (e *Editor) revealOffset(off int) {
-	if e.doc != nil {
-		e.refillFromDoc(off)
-		return
-	}
-	e.moveCursorTo(off)
-}
-
 // gotoLineCol moves the caret to the 1-based line and (0-based) rune column.
 func (e *Editor) gotoLineCol(line, col int) {
-	if e.doc != nil {
-		e.flushWindow()
+	if e.doc != nil && e.code != nil {
 		total := e.doc.LineCount()
 		if line < 1 {
 			line = 1
@@ -441,8 +416,7 @@ func (e *Editor) gotoLineCol(line, col int) {
 		if col > maxCol {
 			col = maxCol
 		}
-		e.view.showLine(line-1, col)
-		e.updateInfo()
+		e.code.gotoLine(line-1, col)
 		e.setStatus(fmt.Sprintf("line %d of %d", line, total))
 		return
 	}

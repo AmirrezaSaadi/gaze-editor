@@ -162,6 +162,9 @@ func (d *Document) slice(from, to int) string {
 	return b.String()
 }
 
+// TextRange returns the text between two byte offsets.
+func (d *Document) TextRange(from, to int) string { return d.slice(from, to) }
+
 // Window returns up to count lines starting at startLine, and how many it got.
 // The returned text ends with a newline unless it reaches the end of the
 // document, matching how widget.Entry represents a buffer.
@@ -220,25 +223,40 @@ func (d *Document) ReplaceRange(from, to int, repl string) {
 }
 
 // updateLines fixes the line index for a replacement of [from, to) by repl.
+//
+// The index is spliced in place: line starts before the edit are untouched, the
+// ones the replaced text had are dropped, the newlines in repl become new starts
+// and the starts after the edit shift by the size difference. Typing therefore
+// costs one integer add per line below the caret rather than a copy of the whole
+// index, which is what keeps a keystroke in a million-line file cheap.
 func (d *Document) updateLines(from, to int, repl string) {
 	delta := len(repl) - (to - from)
+	keep := sort.SearchInts(d.lines, from+1) // line starts at or before from
+	drop := sort.SearchInts(d.lines, to+1)   // line starts at or before to
 
-	// Line starts at or before from survive; the ones inside (from, to] were part
-	// of the replaced text and are re-created below only if repl contains them.
-	keep := sort.SearchInts(d.lines, from+1)
-	drop := sort.SearchInts(d.lines, to+1)
-
-	out := make([]int, 0, len(d.lines)+len(repl)/8+1)
-	out = append(out, d.lines[:keep]...)
+	var added [16]int
+	newStarts := added[:0]
 	for i := 0; i < len(repl); i++ {
 		if repl[i] == '\n' {
-			out = append(out, from+i+1)
+			newStarts = append(newStarts, from+i+1)
 		}
 	}
-	for _, s := range d.lines[drop:] {
-		out = append(out, s+delta)
+
+	oldLen := len(d.lines)
+	grow := len(newStarts) - (drop - keep)
+	if grow > 0 {
+		d.lines = append(d.lines, make([]int, grow)...)
 	}
-	d.lines = out
+	tailStart := keep + len(newStarts)
+	tailLen := oldLen - drop
+	if tailStart != drop {
+		copy(d.lines[tailStart:tailStart+tailLen], d.lines[drop:oldLen])
+	}
+	for i := tailStart; i < tailStart+tailLen; i++ {
+		d.lines[i] += delta
+	}
+	copy(d.lines[keep:], newStarts)
+	d.lines = d.lines[:tailStart+tailLen]
 }
 
 // ReplaceAll swaps the whole document, for operations that rewrite everything.

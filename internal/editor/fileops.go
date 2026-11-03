@@ -176,19 +176,17 @@ func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 
 	if mode.large() {
 		e.largeFile = true
-		// The document keeps the text as pages; the entry only ever holds a
-		// window of it, so the text is not loaded into the entry at all.
+		// The document keeps the text as pages and codeView draws it, so the
+		// buffer never reaches a widget.Entry at all.
 		e.doc = NewDocument(text)
-		e.windowText, e.windowFrom = "", 0
 		e.loading = true
 		e.entry.SetText("")
-		e.largeEntry.SetText("")
 		e.loading = false
 		e.resetUndo()
 		e.currentFile = path
 		e.dirty = false
 		e.applyOpenMode()
-		e.view.reset()
+		e.code.setDoc(e.doc)
 		e.refreshChrome()
 		freeMemory(0)
 		return
@@ -196,7 +194,6 @@ func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 
 	e.largeFile = false
 	e.doc = nil
-	e.windowText, e.windowFrom = "", 0
 	e.loading = true
 	e.entry.SetText(text)
 	e.loading = false
@@ -416,8 +413,6 @@ type saveRequest struct {
 
 // pendingSave snapshots the current buffer and document settings.
 func (e *Editor) pendingSave(path string) saveRequest {
-	// Anything typed in the window must reach the document before it is written.
-	e.flushWindow()
 	req := saveRequest{
 		path: path,
 		eol:  e.eol,

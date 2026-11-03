@@ -9,6 +9,19 @@ import (
 // runeOffset converts a (row, col) cursor position — as used by widget.Entry,
 // where col is measured in runes — into a byte offset in text. It clamps to
 // the end of the buffer when the row is past the last line.
+// runeByteOffset converts a rune column within a line to a byte offset in it.
+func runeByteOffset(line string, col int) int {
+	if col <= 0 {
+		return 0
+	}
+	i := 0
+	for n := 0; n < col && i < len(line); n++ {
+		_, sz := utf8.DecodeRuneInString(line[i:])
+		i += sz
+	}
+	return i
+}
+
 func runeOffset(text string, row, col int) int {
 	off := 0
 	for r := 0; r < row; r++ {
