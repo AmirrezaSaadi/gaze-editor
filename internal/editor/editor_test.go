@@ -26,6 +26,24 @@ func newTestEditor(t *testing.T) *Editor {
 	return e
 }
 
+// setBuffer installs text in the editor the way a loaded file would, and puts
+// the caret at the top.
+func setBuffer(e *Editor, text string) {
+	e.setContentAs(text, e.currentFile, e.enc, openNormal)
+	e.code.setCaret(pos{})
+}
+
+// bufferText is the whole buffer as a string.
+func bufferText(e *Editor) string { return e.text() }
+
+// caret is the caret position, 0-based.
+func caret(e *Editor) (row, col int) {
+	if e.code == nil {
+		return 0, 0
+	}
+	return e.code.caret.row, e.code.caret.col
+}
+
 func TestThemeSwitching(t *testing.T) {
 	e := newTestEditor(t)
 
@@ -55,7 +73,7 @@ func TestDirtyTrackingAndStats(t *testing.T) {
 	if e.dirty {
 		t.Fatal("new editor should be clean")
 	}
-	test.Type(e.entry, "hello world\nsecond")
+	test.Type(e.code, "hello world\nsecond")
 	if !e.dirty {
 		t.Fatal("typing should mark the buffer dirty")
 	}
@@ -81,16 +99,16 @@ func TestFindMovesCursor(t *testing.T) {
 
 	e.findEntry.SetText("beta")
 	e.FindNext()
-	if e.entry.CursorRow != 1 {
-		t.Fatalf("first match row = %d, want 1", e.entry.CursorRow)
+	if caretRow(e) != 1 {
+		t.Fatalf("first match row = %d, want 1", caretRow(e))
 	}
 	e.FindNext()
-	if e.entry.CursorRow != 3 {
-		t.Fatalf("second match row = %d, want 3", e.entry.CursorRow)
+	if caretRow(e) != 3 {
+		t.Fatalf("second match row = %d, want 3", caretRow(e))
 	}
 	e.FindNext() // wraps
-	if e.entry.CursorRow != 1 {
-		t.Fatalf("wrapped match row = %d, want 1", e.entry.CursorRow)
+	if caretRow(e) != 1 {
+		t.Fatalf("wrapped match row = %d, want 1", caretRow(e))
 	}
 }
 
@@ -101,16 +119,16 @@ func TestReplaceAll(t *testing.T) {
 	e.replEntry.SetText("fox")
 
 	e.ReplaceAll()
-	if e.entry.Text != "fox dog fox" {
-		t.Fatalf("ReplaceAll = %q, want %q", e.entry.Text, "fox dog fox")
+	if bufferText(e) != "fox dog fox" {
+		t.Fatalf("ReplaceAll = %q, want %q", bufferText(e), "fox dog fox")
 	}
 
 	e.matchCase.Checked = true
 	// Reset and check case-sensitive matching.
 	e.SetContent("cat dog CAT", "")
 	e.ReplaceAll()
-	if e.entry.Text != "fox dog CAT" {
-		t.Fatalf("case-sensitive ReplaceAll = %q, want %q", e.entry.Text, "fox dog CAT")
+	if bufferText(e) != "fox dog CAT" {
+		t.Fatalf("case-sensitive ReplaceAll = %q, want %q", bufferText(e), "fox dog CAT")
 	}
 }
 
@@ -118,12 +136,12 @@ func TestGoToLine(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("one\ntwo\nthree", "")
 	e.gotoLine(3)
-	if e.entry.CursorRow != 2 || e.entry.CursorColumn != 0 {
-		t.Fatalf("gotoLine(3) = (%d,%d), want (2,0)", e.entry.CursorRow, e.entry.CursorColumn)
+	if caretRow(e) != 2 || caretCol(e) != 0 {
+		t.Fatalf("gotoLine(3) = (%d,%d), want (2,0)", caretRow(e), caretCol(e))
 	}
 	e.gotoLine(99) // clamps
-	if e.entry.CursorRow != 2 {
-		t.Fatalf("gotoLine(99) row = %d, want 2", e.entry.CursorRow)
+	if caretRow(e) != 2 {
+		t.Fatalf("gotoLine(99) row = %d, want 2", caretRow(e))
 	}
 }
 
@@ -137,12 +155,21 @@ func TestWordWrapToggle(t *testing.T) {
 	if e.wrapItem.Checked != e.wrap {
 		t.Fatal("wrap menu check should follow the flag")
 	}
-	want := fyne.TextWrapWord
-	if !e.wrap {
-		want = fyne.TextWrapOff
+	if e.code.wrap != e.wrap {
+		t.Fatalf("code view wrapping = %v, want %v", e.code.wrap, e.wrap)
 	}
-	if e.entry.Wrapping != want {
-		t.Fatalf("entry wrapping = %v, want %v", e.entry.Wrapping, want)
+	// Wrapping is checked against a line that is wider than the window.
+	if !e.wrap {
+		e.ToggleWrap()
+	}
+	e.SetContent("", "")
+	setBuffer(e, strings.Repeat("x", 400))
+	if rows := e.code.totalRows(); rows < 2 {
+		t.Fatalf("a 400 cell line took %d rows, want it wrapped", rows)
+	}
+	e.ToggleWrap()
+	if got := e.code.totalRows(); got != 1 {
+		t.Fatalf("after turning wrap off the line takes %d rows, want 1", got)
 	}
 }
 
@@ -252,4 +279,15 @@ func TestTextHelpers(t *testing.T) {
 	if got := lineCount(""); got != 1 {
 		t.Fatalf("lineCount empty = %d, want 1", got)
 	}
+}
+
+// caretRow and caretCol are the 0-based caret position.
+func caretRow(e *Editor) int {
+	row, _ := caret(e)
+	return row
+}
+
+func caretCol(e *Editor) int {
+	_, col := caret(e)
+	return col
 }

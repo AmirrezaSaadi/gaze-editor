@@ -548,23 +548,29 @@ func TestCodeViewSessionCaret(t *testing.T) {
 	}
 }
 
-// A small file opened after a large one goes back to the plain entry.
-func TestSmallFileAfterLargeUsesPlainEntry(t *testing.T) {
+// A small file opened after a large one comes back with counts and snapshots on
+// and the caret at the top.
+func TestSmallFileAfterLarge(t *testing.T) {
 	e, _ := openCode(t, codeText(5000))
+	if !e.largeFile {
+		t.Fatal("the large document should be in large-file mode")
+	}
 
 	e.setContentAs("hello\nworld\n", "/tmp/small.txt", encUTF8, openNormal)
-	if e.largeFile || e.doc != nil {
+	if e.largeFile {
 		t.Fatal("opening a small file left large-file mode on")
 	}
-	if e.entry.Text != "hello\nworld\n" {
-		t.Fatalf("entry = %q", e.entry.Text)
+	if got := bufferText(e); got != "hello\nworld\n" {
+		t.Fatalf("buffer = %q", got)
 	}
-	if e.normalArea.Hidden || !e.largeArea.Hidden {
-		t.Fatalf("wrong widget shown: large hidden=%v normal hidden=%v",
-			e.largeArea.Hidden, e.normalArea.Hidden)
+	if row, col := caret(e); row != 0 || col != 0 {
+		t.Fatalf("caret at %d:%d, want the top", row, col)
 	}
-	if e.focusTarget() != e.entry {
-		t.Fatal("focus should be back on the plain entry")
+	if e.statWords != 2 || e.statChars != 12 {
+		t.Fatalf("counts = %dw/%dc, want 2w/12c", e.statWords, e.statChars)
+	}
+	if e.focusTarget() != fyne.Focusable(e.code) {
+		t.Fatal("focus should be on the code view")
 	}
 }
 

@@ -1,38 +1,37 @@
 package editor
 
 import (
-	"fmt"
 	"testing"
 
 	"fyne.io/fyne/v2/test"
 )
 
-// Structural commands rewrite the buffer with SetText, which clears Entry's own
-// undo stack. Before the snapshot fix, none of them could be undone at all.
+// Structural commands are single undoable steps.
 func TestUndoLineOperation(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("one\ntwo", "")
 
-	e.entry.CursorRow, e.entry.CursorColumn = 0, 0
+	e.code.setCaret(pos{row: 0, col: 0})
 	e.DuplicateLine()
-	if e.entry.Text != "one\none\ntwo" {
-		t.Fatalf("after duplicate = %q", e.entry.Text)
+	if bufferText(e) != "one\none\ntwo" {
+		t.Fatalf("after duplicate = %q", bufferText(e))
 	}
 
 	e.Undo()
-	if e.entry.Text != "one\ntwo" {
-		t.Fatalf("undo after duplicate = %q, want %q", e.entry.Text, "one\ntwo")
+	if bufferText(e) != "one\ntwo" {
+		t.Fatalf("undo after duplicate = %q, want %q", bufferText(e), "one\ntwo")
 	}
-	if e.entry.CursorRow != 0 {
-		t.Fatalf("undo caret row = %d, want 0", e.entry.CursorRow)
+	if caretRow(e) != 0 {
+		t.Fatalf("undo caret row = %d, want 0", caretRow(e))
 	}
 
 	e.Redo()
-	if e.entry.Text != "one\none\ntwo" {
-		t.Fatalf("redo = %q", e.entry.Text)
+	if bufferText(e) != "one\none\ntwo" {
+		t.Fatalf("redo = %q", bufferText(e))
 	}
 }
 
+// Replace all is one step, however many matches it touched.
 func TestUndoReplaceAll(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("cat dog cat", "")
@@ -40,17 +39,17 @@ func TestUndoReplaceAll(t *testing.T) {
 	e.replEntry.SetText("fox")
 
 	e.ReplaceAll()
-	if e.entry.Text != "fox dog fox" {
-		t.Fatalf("after replace all = %q", e.entry.Text)
+	if bufferText(e) != "fox dog fox" {
+		t.Fatalf("after replace all = %q", bufferText(e))
 	}
 	e.Undo()
-	if e.entry.Text != "cat dog cat" {
-		t.Fatalf("undo after replace all = %q", e.entry.Text)
+	if bufferText(e) != "cat dog cat" {
+		t.Fatalf("undo after replace all = %q", bufferText(e))
 	}
 }
 
-// Undoing a rewrite must also restore the clean/dirty flag it was made from, so
-// that undoing back to the just-loaded state does not leave a bogus "•" marker.
+// Undoing back to the state a file was loaded in clears the dirty flag, so the
+// title does not keep a "•" for changes that are gone.
 func TestUndoRestoresDirtyFlag(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("a\nb", "")
@@ -58,7 +57,7 @@ func TestUndoRestoresDirtyFlag(t *testing.T) {
 		t.Fatal("freshly loaded buffer should be clean")
 	}
 
-	e.entry.CursorRow, e.entry.CursorColumn = 0, 0
+	e.code.setCaret(pos{row: 0, col: 0})
 	e.DuplicateLine()
 	if !e.dirty {
 		t.Fatal("duplicate should mark the buffer dirty")
@@ -70,28 +69,32 @@ func TestUndoRestoresDirtyFlag(t *testing.T) {
 	}
 }
 
-// Typing is undone by Entry first, then the snapshot of the rewrite that
-// cleared Entry's stack. Anything deeper is not reachable and must be a no-op
-// rather than corrupting the buffer.
-func TestUndoOrderTypingThenRewrite(t *testing.T) {
+// Typing is undone as a run, and the commands after it are undone one at a time.
+func TestUndoOrderTypingThenCommand(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("", "")
 
-	test.Type(e.entry, "hello")
-	e.entry.CursorRow, e.entry.CursorColumn = 0, 0
+	test.Type(e.code, "hello")
+	if bufferText(e) != "hello" {
+		t.Fatalf("after typing = %q", bufferText(e))
+	}
+	e.code.setCaret(pos{row: 0, col: 0})
 	e.DuplicateLine()
-	if e.entry.Text != "hello\nhello" {
-		t.Fatalf("after duplicate = %q", e.entry.Text)
+	if bufferText(e) != "hello\nhello" {
+		t.Fatalf("after duplicate = %q", bufferText(e))
 	}
 
 	e.Undo()
-	if e.entry.Text != "hello" {
-		t.Fatalf("first undo = %q, want %q", e.entry.Text, "hello")
+	if bufferText(e) != "hello" {
+		t.Fatalf("first undo = %q, want %q", bufferText(e), "hello")
 	}
-
+	e.Undo()
+	if bufferText(e) != "" {
+		t.Fatalf("second undo = %q, want an empty buffer", bufferText(e))
+	}
 	e.Undo() // history exhausted
-	if e.entry.Text != "hello" {
-		t.Fatalf("second undo changed the buffer to %q", e.entry.Text)
+	if bufferText(e) != "" {
+		t.Fatalf("undoing past the start changed the buffer to %q", bufferText(e))
 	}
 }
 
@@ -99,54 +102,61 @@ func TestTypingDropsRedo(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("x\ny", "")
 
-	e.entry.CursorRow, e.entry.CursorColumn = 0, 0
+	e.code.setCaret(pos{row: 0, col: 0})
 	e.DuplicateLine()
 	e.Undo()
-	if len(e.redo) == 0 {
+	if len(e.code.redo) == 0 {
 		t.Fatal("undo should leave something to redo")
 	}
 
-	test.Type(e.entry, "Z")
-	if len(e.redo) != 0 {
+	test.Type(e.code, "Z")
+	if len(e.code.redo) != 0 {
 		t.Fatal("a new edit should invalidate the redo trail")
 	}
 
-	before := e.entry.Text
+	before := bufferText(e)
 	e.Redo()
-	if e.entry.Text != before {
-		t.Fatalf("redo after a new edit changed the buffer to %q", e.entry.Text)
+	if bufferText(e) != before {
+		t.Fatalf("redo after a new edit changed the buffer to %q", bufferText(e))
 	}
 }
 
 func TestNewDocumentResetsHistory(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("a\nb", "")
-	e.entry.CursorRow, e.entry.CursorColumn = 0, 0
+	e.code.setCaret(pos{row: 0, col: 0})
 	e.DuplicateLine()
 
 	e.SetContent("fresh", "")
 	e.Undo()
-	if e.entry.Text != "fresh" {
-		t.Fatalf("undo after loading a new document = %q", e.entry.Text)
+	if bufferText(e) != "fresh" {
+		t.Fatalf("undo after loading a new document = %q", bufferText(e))
 	}
-	if len(e.undo) != 0 || len(e.redo) != 0 {
-		t.Fatalf("history should be empty, got %d undo / %d redo", len(e.undo), len(e.redo))
+	if len(e.code.undo) != 0 || len(e.code.redo) != 0 {
+		t.Fatalf("history should be empty, got %d undo / %d redo", len(e.code.undo), len(e.code.redo))
 	}
 }
 
+// The history is bounded, and the newest edits are the ones kept.
 func TestUndoStackIsBounded(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("", "")
 
-	for i := 0; i < maxUndoSteps*2; i++ {
-		e.entry.SetText(fmt.Sprintf("step %d", i))
-		e.pushUndo()
+	for i := 0; i < maxCodeUndoEdits+50; i++ {
+		// Typing at the start each time breaks the run, so every edit is its own
+		// history entry.
+		e.code.setCaret(pos{row: 0, col: 0})
+		e.code.insertText("x")
 	}
-	if len(e.undo) > maxUndoSteps {
-		t.Fatalf("undo stack grew to %d, want at most %d", len(e.undo), maxUndoSteps)
+	if got := len(e.code.undo); got > maxCodeUndoEdits {
+		t.Fatalf("undo history grew to %d, want at most %d", got, maxCodeUndoEdits)
 	}
-	// The newest state must survive eviction.
-	if got := e.undo[len(e.undo)-1].text; got != fmt.Sprintf("step %d", maxUndoSteps*2-1) {
-		t.Fatalf("newest snapshot = %q", got)
+	// The newest edit must survive eviction.
+	if got := e.code.undo[len(e.code.undo)-1].ins; got != "x" {
+		t.Fatalf("newest entry inserts %q", got)
+	}
+	e.Undo()
+	if got := bufferText(e); len(got) != maxCodeUndoEdits+50-1 {
+		t.Fatalf("after undo the buffer is %d bytes, want %d", len(got), maxCodeUndoEdits+49)
 	}
 }

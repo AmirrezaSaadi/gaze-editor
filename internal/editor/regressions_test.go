@@ -76,14 +76,14 @@ func TestRegexAnchorDoesNotReplaceAtOffset(t *testing.T) {
 	e.regexCheck.Checked = true
 	e.replEntry.SetText("Z")
 
-	e.entry.CursorRow, e.entry.CursorColumn = 0, 7 // on the "foo" inside "xxfoo"
+	e.code.setCaret(pos{row: 0, col: 7}) // on the "foo" inside "xxfoo"
 	e.ReplaceCurrent()
 
-	if e.entry.Text != "foo xxfoo" {
-		t.Fatalf("ReplaceCurrent modified text that is not a ^ match: %q", e.entry.Text)
+	if bufferText(e) != "foo xxfoo" {
+		t.Fatalf("ReplaceCurrent modified text that is not a ^ match: %q", bufferText(e))
 	}
-	if e.entry.CursorColumn != 0 {
-		t.Fatalf("caret column = %d, want 0 (the real ^ match)", e.entry.CursorColumn)
+	if caretCol(e) != 0 {
+		t.Fatalf("caret column = %d, want 0 (the real ^ match)", caretCol(e))
 	}
 }
 
@@ -96,14 +96,14 @@ func TestRegexWordBoundaryDoesNotMatchInsideWord(t *testing.T) {
 	e.regexCheck.Checked = true
 	e.replEntry.SetText("Z")
 
-	e.entry.CursorRow, e.entry.CursorColumn = 0, 1 // inside "xfoo"
+	e.code.setCaret(pos{row: 0, col: 1}) // inside "xfoo"
 	e.ReplaceCurrent()
 
-	if e.entry.Text != "xfoo foo" {
-		t.Fatalf("ReplaceCurrent modified a non-match: %q", e.entry.Text)
+	if bufferText(e) != "xfoo foo" {
+		t.Fatalf("ReplaceCurrent modified a non-match: %q", bufferText(e))
 	}
-	if e.entry.CursorColumn != 5 {
-		t.Fatalf("caret column = %d, want 5 (the real \\b match)", e.entry.CursorColumn)
+	if caretCol(e) != 5 {
+		t.Fatalf("caret column = %d, want 5 (the real \\b match)", caretCol(e))
 	}
 }
 
@@ -111,17 +111,17 @@ func TestRegexWordBoundaryDoesNotMatchInsideWord(t *testing.T) {
 func TestReplaceAllKeepsCaret(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("a\nb\na", "")
-	e.entry.CursorRow, e.entry.CursorColumn = 1, 0
+	e.code.setCaret(pos{row: 1, col: 0})
 	e.findEntry.SetText("a")
 	e.replEntry.SetText("x")
 
 	e.ReplaceAll()
 
-	if e.entry.Text != "x\nb\nx" {
-		t.Fatalf("ReplaceAll = %q, want %q", e.entry.Text, "x\nb\nx")
+	if bufferText(e) != "x\nb\nx" {
+		t.Fatalf("ReplaceAll = %q, want %q", bufferText(e), "x\nb\nx")
 	}
-	if e.entry.CursorRow != 1 {
-		t.Fatalf("ReplaceAll moved the caret to row %d, want 1", e.entry.CursorRow)
+	if caretRow(e) != 1 {
+		t.Fatalf("ReplaceAll moved the caret to row %d, want 1", caretRow(e))
 	}
 }
 
@@ -135,13 +135,13 @@ func TestOpenPathAtColumnIsOneBased(t *testing.T) {
 
 	e := newTestEditor(t)
 	e.OpenPathAt(path, 2, 3)
-	if e.entry.CursorRow != 1 || e.entry.CursorColumn != 2 {
-		t.Fatalf("caret after 2:3 = (%d,%d), want (1,2)", e.entry.CursorRow, e.entry.CursorColumn)
+	if caretRow(e) != 1 || caretCol(e) != 2 {
+		t.Fatalf("caret after 2:3 = (%d,%d), want (1,2)", caretRow(e), caretCol(e))
 	}
 
 	e.OpenPathAt(path, 3, 0) // column 0 is also the start of the line
-	if e.entry.CursorRow != 2 || e.entry.CursorColumn != 0 {
-		t.Fatalf("caret after 3:0 = (%d,%d), want (2,0)", e.entry.CursorRow, e.entry.CursorColumn)
+	if caretRow(e) != 2 || caretCol(e) != 0 {
+		t.Fatalf("caret after 3:0 = (%d,%d), want (2,0)", caretRow(e), caretCol(e))
 	}
 }
 
@@ -207,7 +207,7 @@ func TestExternalChangeIsDetected(t *testing.T) {
 		t.Fatal("an externally modified file was not detected")
 	}
 
-	e.entry.SetText("mine")
+	setBuffer(e, "mine")
 	e.writeTo(path) // the test confirms the conflict dialog path separately
 	if e.externalChange(path) {
 		t.Fatal("a save should re-baseline the file state")
@@ -221,12 +221,12 @@ func TestEditsDuringSaveAreKept(t *testing.T) {
 
 	e := newTestEditor(t)
 	e.SetContent("first", path)
-	req := e.pendingSave(path)      // snapshot handed to the writer
-	e.entry.SetText("first + more") // the user keeps typing
-	e.finishSave(req, "first")      // …and the write completes
+	req := e.pendingSave(path)   // snapshot handed to the writer
+	setBuffer(e, "first + more") // the user keeps typing
+	e.finishSave(req, "first")   // …and the write completes
 
-	if e.entry.Text != "first + more" {
-		t.Fatalf("buffer overwritten by the save: %q", e.entry.Text)
+	if bufferText(e) != "first + more" {
+		t.Fatalf("buffer overwritten by the save: %q", bufferText(e))
 	}
 	if !e.dirty {
 		t.Fatal("edits made during a save must leave the document dirty")
@@ -242,13 +242,13 @@ func TestTrimOnSaveIsUndoable(t *testing.T) {
 	e.trimOnSave = true
 	e.writeTo(path)
 
-	if e.entry.Text != "a\nb" {
-		t.Fatalf("buffer after trim-on-save = %q, want %q", e.entry.Text, "a\nb")
+	if bufferText(e) != "a\nb" {
+		t.Fatalf("buffer after trim-on-save = %q, want %q", bufferText(e), "a\nb")
 	}
 
 	e.Undo()
-	if e.entry.Text != "a  \nb" {
-		t.Fatalf("undo after trim = %q, want the untrimmed buffer", e.entry.Text)
+	if bufferText(e) != "a  \nb" {
+		t.Fatalf("undo after trim = %q, want the untrimmed buffer", bufferText(e))
 	}
 }
 
@@ -292,7 +292,7 @@ func TestEscapeDoesNotStealFocusWhenFindBarIsClosed(t *testing.T) {
 	if e.findBar.Visible() {
 		t.Fatal("Esc should close an open find bar")
 	}
-	if got := canvas.Focused(); got != fyne.Focusable(e.entry) {
+	if got := canvas.Focused(); got != fyne.Focusable(e.code) {
 		t.Fatalf("focus after closing the find bar = %T, want the editor", got)
 	}
 }

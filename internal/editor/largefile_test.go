@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 	"unicode/utf16"
-
-	"fyne.io/fyne/v2"
 )
 
 // setSizeLimits moves the open size thresholds for one test.
@@ -97,8 +95,8 @@ func TestOversizeReadDoesNotReplaceTheBuffer(t *testing.T) {
 	// reader's own limit.
 	e.openPath(path, openNormal, 0, 0)
 
-	if e.entry.Text != "keep me" {
-		t.Fatalf("buffer = %q, want it untouched", e.entry.Text)
+	if bufferText(e) != "keep me" {
+		t.Fatalf("buffer = %q, want it untouched", bufferText(e))
 	}
 	if e.currentFile != "" {
 		t.Fatalf("currentFile = %q, want none", e.currentFile)
@@ -114,9 +112,6 @@ func TestLargeFileModeShedsCopyingChrome(t *testing.T) {
 
 	if !e.largeFile {
 		t.Fatal("setContentAs(openLarge) should enable large-file mode")
-	}
-	if e.entry.Wrapping != fyne.TextWrapOff {
-		t.Fatalf("the plain entry's wrapping = %v, want off in large-file mode", e.entry.Wrapping)
 	}
 	if e.statWords != 0 || e.statChars != 0 {
 		t.Fatalf("counts = %dw/%dc, want them skipped", e.statWords, e.statChars)

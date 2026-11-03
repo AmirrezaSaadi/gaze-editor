@@ -46,6 +46,7 @@ type docEdit struct {
 	ins   string // text that was inserted
 	caret pos    // caret before the edit
 	after pos    // caret after the edit
+	dirty bool   // dirty flag before the edit
 	at    time.Time
 }
 
@@ -546,7 +547,8 @@ func (v *codeView) edit(off int, del string, ins string, merge bool) {
 		}
 	}
 	v.applyReplace(off, del, ins)
-	e := docEdit{off: off, old: del, ins: ins, caret: before, after: v.posAt(off + len(ins)), at: time.Now()}
+	e := docEdit{off: off, old: del, ins: ins, caret: before, after: v.posAt(off + len(ins)),
+		dirty: v.ed.dirty, at: time.Now()}
 	v.undo = append(v.undo, e)
 	v.undoBytes += len(del) + len(ins)
 	v.redo = nil
@@ -559,7 +561,7 @@ func (v *codeView) rawEdit(off int, del, ins string) {
 	v.applyReplace(off, del, ins)
 	v.undo = append(v.undo, docEdit{
 		off: off, old: del, ins: ins,
-		caret: v.caret, after: v.caret, at: time.Now(),
+		caret: v.caret, after: v.caret, dirty: v.ed.dirty, at: time.Now(),
 	})
 	v.undoBytes += len(del) + len(ins)
 	v.redo = nil
@@ -759,6 +761,20 @@ func (v *codeView) duplicateLine() {
 	v.render()
 }
 
+// resetUndo clears the undo and redo history.
+func (v *codeView) resetUndo() {
+	v.undo, v.redo = nil, nil
+	v.undoBytes = 0
+}
+
+// replaceAll swaps the whole document for text as one undoable edit.
+func (v *codeView) replaceAll(old, text string) {
+	v.rawEdit(0, old, text)
+	v.caret, v.anchor = pos{}, pos{}
+	v.followCaret()
+	v.render()
+}
+
 // --- undo -------------------------------------------------------------------
 
 // Undo reverts the last edit.
@@ -776,6 +792,8 @@ func (v *codeView) Undo() {
 	v.caret, v.anchor = e.caret, e.caret
 	v.followCaret()
 	v.ed.onCodeChange()
+	v.ed.dirty = e.dirty // back to the state the edit was made from
+	v.ed.updateTitle()
 	v.render()
 }
 
