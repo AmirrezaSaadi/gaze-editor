@@ -11,6 +11,47 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.7.0] - 2026-11-04
+
+Files of a few hundred megabytes now open in seconds instead of being turned
+away, and a keystroke in one costs a fraction of a millisecond.
+
+### Added
+
+- **A 1 GiB open limit** (was 256 MiB), with the size dialog and the refusal
+  message saying what an open actually costs in memory.
+
+### Changed
+
+- **Opening streams the file into the page store.** `docBuilder` fills 64 KB
+  pages, normalises line endings and records line starts as the bytes arrive,
+  so the file is never held as one string and the peak is the file plus its
+  index: a 256 MB file opens in ~2 s with ~340 MB of heap, a 1 GB file in ~9 s
+  with ~1.3 GB. Runs without a carriage return or NUL are copied in bulk.
+- **UTF-16 is decoded while reading** through a streaming `utf16Reader`, so a
+  large UTF-16 file no longer needs a full byte slice and a full rune slice
+  before it can be shown. `readDocument` (stdin, tests) shares the same sniffer.
+- **Line starts are indexed in blocks of 4096** (a block base plus an int32),
+  so typing shifts one base per block instead of one offset per line: a
+  keystroke in a 5.5M-line file went from 12 ms to ~0.1 ms.
+- Text metrics are cached per theme size instead of calling `fyne.MeasureText`
+  on every query, the wrap index walks pages directly and skips lines that
+  cannot wrap (2.4 s -> 0.4 s for 5.5M lines), and the wrap index is patched
+  rather than rebuilt when an edit changes the line count.
+- Case-insensitive find compares ASCII bytes against a folded query instead of
+  calling `strings.EqualFold` at every position (17 s -> 1.6 s for a full pass
+  over 256 MB), and the wrap-around search is skipped when the search already
+  started at the top of the file.
+
+### Fixed
+
+- The wrap index was wrong after an edit that joined two lines: the joined
+  line's own row count has to be added, not the row count of the line that was
+  swallowed.
+- `decodeUTF16` (and the whole-buffer read it needed) is gone; unpaired
+  surrogates still become U+FFFD and a truncated UTF-16 stream is still
+  reported rather than silently dropped.
+
 ## [1.6.0] - 2026-11-03
 
 `widget.Entry` is gone: Gaze draws and edits every file itself, so a 40 MB log
