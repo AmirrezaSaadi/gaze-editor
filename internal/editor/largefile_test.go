@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf16"
+
+	"fyne.io/fyne/v2/test"
 )
 
 // setSizeLimits moves the open size thresholds for one test.
@@ -103,8 +105,9 @@ func TestOversizeReadDoesNotReplaceTheBuffer(t *testing.T) {
 	}
 }
 
-// Large-file mode drops the chrome that copies or rescans the document.
-func TestLargeFileModeShedsCopyingChrome(t *testing.T) {
+// Large-file mode still counts, still wraps and still says so, but leaves the
+// numbers out of the readout until the count has been worked out.
+func TestLargeFileModeCountsAndWrap(t *testing.T) {
 	e := newTestEditor(t)
 	path := filepath.Join(t.TempDir(), "big.txt")
 
@@ -113,14 +116,18 @@ func TestLargeFileModeShedsCopyingChrome(t *testing.T) {
 	if !e.largeFile {
 		t.Fatal("setContentAs(openLarge) should enable large-file mode")
 	}
-	if e.statWords != 0 || e.statChars != 0 {
-		t.Fatalf("counts = %dw/%dc, want them skipped", e.statWords, e.statChars)
+	if strings.Contains(e.info.Text, "0w") || strings.Contains(e.info.Text, "0c") {
+		t.Fatalf("status readout = %q, want the counts left out until they are known", e.info.Text)
+	}
+	waitFor(t, "the counts", func() bool { return e.statsKnown })
+	if e.statWords != 3 || e.statChars != 13 {
+		t.Fatalf("counts = %dw/%dc, want 3w/13c", e.statWords, e.statChars)
+	}
+	if !strings.Contains(e.info.Text, "3w · 13c") {
+		t.Fatalf("status readout = %q, want the counts in it", e.info.Text)
 	}
 	if !strings.Contains(e.info.Text, "large") {
 		t.Fatalf("status readout = %q, want it to name large-file mode", e.info.Text)
-	}
-	if strings.Contains(e.info.Text, "0w") {
-		t.Fatalf("status readout = %q, want no word count", e.info.Text)
 	}
 	// Wrap is a preference, and large-file mode honours it like any other file.
 	if e.wrapItem.Checked != e.wrap || e.wrapItem.Disabled {
@@ -135,6 +142,27 @@ func TestLargeFileModeShedsCopyingChrome(t *testing.T) {
 	e.ToggleWrap()
 	if e.code.wrap != before {
 		t.Fatal("toggling wrap back did not restore it")
+	}
+}
+
+// The counts of a big document follow the edits: typing marks them unknown and a
+// pause recounts, off the UI goroutine.
+func TestLargeFileCountsFollowEdits(t *testing.T) {
+	e := newTestEditor(t)
+	path := filepath.Join(t.TempDir(), "big.txt")
+	// Wider than statsSyncLimit, so the recount is deferred and asynchronous.
+	e.setContentAs(strings.Repeat("word ", 60000), path, encUTF8, openLarge)
+
+	waitFor(t, "the first count", func() bool { return e.statsKnown })
+	if e.statWords != 60000 {
+		t.Fatalf("words = %d, want 60000", e.statWords)
+	}
+
+	e.code.setCaret(pos{row: 0, col: 0})
+	test.Type(e.code, "extra ")
+	waitFor(t, "the recount", func() bool { return e.statsKnown && e.statWords == 60001 })
+	if !strings.Contains(e.info.Text, "60001w") {
+		t.Fatalf("status readout = %q, want the new count", e.info.Text)
 	}
 }
 
@@ -179,15 +207,8 @@ func TestLargeFileWritesRecoverySnapshot(t *testing.T) {
 	e := newTestEditor(t)
 	want := codeText(20000)
 	e.setContentAs(want, path, encUTF8, openLarge)
-	e.autosaveOn = true
 	e.dirty = true
-	e.lastAutosave = time.Time{}
-
-	e.maybeAutosave()
-	waitFor(t, "the large document snapshot", func() bool {
-		_, ok := recoveryFor(path)
-		return ok
-	})
+	e.writeRecovery()
 
 	got, ok := recoveryFor(path)
 	if !ok {
@@ -216,19 +237,14 @@ func TestLargeFileAutosaveIsRarer(t *testing.T) {
 
 	// The throttle honours it: a snapshot written a minute ago is too recent for
 	// a large document but due for a small one.
-	e.autosaveOn = true
-	e.dirty = true
-	stale := time.Now().Add(-time.Minute)
-	e.lastAutosave = stale
-	e.maybeAutosave()
-	if e.lastAutosave != stale {
+	now := time.Now()
+	e.lastAutosave = now.Add(-time.Minute)
+	if e.autosaveDue(now) {
 		t.Fatal("a large document should not be snapshotted again after a minute")
 	}
 	e.setContentAs("a", path, encUTF8, openNormal)
-	e.dirty = true
-	e.lastAutosave = stale
-	e.maybeAutosave()
-	if e.lastAutosave == stale {
+	e.lastAutosave = now.Add(-time.Minute)
+	if !e.autosaveDue(now) {
 		t.Fatal("a small document should be snapshotted after a minute")
 	}
 }

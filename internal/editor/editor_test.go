@@ -173,15 +173,24 @@ func TestWordWrapToggle(t *testing.T) {
 	}
 }
 
+// Zooming re-measures the editing surface, in every mode.
 func TestZoom(t *testing.T) {
 	e := newTestEditor(t)
+	e.SetContent("a\nb\n", "/tmp/zoom.txt")
+	before, _ := e.code.metrics()
 	e.zoom(1)
 	if e.themes.Zoom() <= 1 {
 		t.Fatalf("zoom in = %v, want > 1", e.themes.Zoom())
 	}
+	if after, _ := e.code.metrics(); after <= before {
+		t.Fatalf("line height after zooming in = %v, want more than %v", after, before)
+	}
 	e.ResetZoom()
 	if e.themes.Zoom() != 1 {
 		t.Fatalf("reset zoom = %v, want 1", e.themes.Zoom())
+	}
+	if after, _ := e.code.metrics(); after != before {
+		t.Fatalf("line height after reset = %v, want %v", after, before)
 	}
 }
 

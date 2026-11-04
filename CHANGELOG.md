@@ -11,6 +11,51 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.6.0] - 2026-11-03
+
+`widget.Entry` is gone: Gaze draws and edits every file itself, so a 40 MB log
+and a shopping list now behave identically — same wrap, same undo, same counts,
+same crash recovery.
+
+### Added
+
+- **Word wrap in large-file mode.** The code view wraps a line into visual rows
+  itself (breaking after the last space that fits, splitting words that are
+  wider than the window) and keeps a visual-row index so scrolling, the
+  scrollbar, the caret and mouse hits all work in row space. The index is
+  patched in place after an edit instead of being rebuilt, so typing stays cheap
+  in a 600k-line file.
+- **Live word and character counts for large files.** The count streams the
+  document's pages off the UI goroutine, debounced after typing pauses, and the
+  readout simply omits the numbers until the first count arrives.
+- **Crash recovery for large files.** A snapshot is streamed page by page from
+  the document, so an unsaved 40 MB buffer survives a crash; snapshots of big
+  documents are taken every 2 minutes rather than every 30 seconds.
+
+### Changed
+
+- **One editing surface.** `editor.entry`, the normal/large area switch and the
+  snapshot-based undo stack are gone. `setContentAs` always builds a `Document`,
+  and large-file mode now only decides which chrome is kept (save-time trim, a
+  short undo history) instead of which widget edits the text.
+- Undo, redo, select all, clipboard, the line commands and find/replace all run
+  through the code view: one history entry per command, typed runs coalesced,
+  and each entry remembers the dirty flag so undoing back to the loaded state
+  clears the "•" marker again.
+- Saves always stream the document snapshot through the same encoding, EOL and
+  trim path; the save-time trim is mirrored back into the buffer as one undoable
+  edit rather than a `SetText` rewrite.
+- The status readout is cached, so a keystroke no longer forces a window relayout.
+
+### Fixed
+
+- Loading a document while a save was in flight could let that save's trim
+  rewrite land in the new buffer; the request now carries an edit sequence.
+- Zooming or switching theme did not re-measure the editing surface unless the
+  file was large.
+- Undo after a save-time trim restored the untrimmed text as a separate step
+  that could not be redone.
+
 ## [1.5.0] - 2026-11-02
 
 Large files now get their own editor surface, and `widget.Entry` is out of the
