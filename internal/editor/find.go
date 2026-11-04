@@ -205,7 +205,7 @@ func (e *Editor) FindNext() {
 	}
 
 	idx, _, found := m.next(text, from)
-	if !found {
+	if !found && from > 0 {
 		idx, _, found = m.next(text, 0) // wrap
 	}
 	if !found {

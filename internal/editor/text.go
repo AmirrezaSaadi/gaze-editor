@@ -86,6 +86,42 @@ func findFrom(text, q string, from int, matchCase bool) int {
 		}
 		return -1
 	}
+	// Case-insensitive search. Comparing every position with EqualFold costs a
+	// call per rune, which on a few hundred megabytes is minutes of work; the
+	// first byte is rejected with a table lookup instead, so EqualFold only runs
+	// where a match could actually start.
+	if len(q) == 0 {
+		return -1
+	}
+	if isASCII(q) {
+		// An ASCII query is compared byte by byte against its folded form, which
+		// keeps the scan a plain loop instead of a Unicode call per candidate.
+		var low [64]byte
+		folded := low[:0]
+		if len(q) <= len(low) {
+			for i := 0; i < len(q); i++ {
+				folded = append(folded, foldByte(q[i]))
+			}
+		} else {
+			folded = []byte(strings.ToLower(q))
+		}
+		want := folded[0]
+		for i := from; i+len(q) <= len(text); i++ {
+			if foldByte(text[i]) != want {
+				continue
+			}
+			k := 1
+			for ; k < len(folded); k++ {
+				if foldByte(text[i+k]) != folded[k] {
+					break
+				}
+			}
+			if k == len(folded) {
+				return i
+			}
+		}
+		return -1
+	}
 	for i := from; i+len(q) <= len(text); {
 		if strings.EqualFold(text[i:i+len(q)], q) {
 			return i
@@ -97,6 +133,26 @@ func findFrom(text, q string, from int, matchCase bool) int {
 		i += size
 	}
 	return -1
+}
+
+// isASCII reports whether s is plain ASCII, which is what lets the
+// case-insensitive search compare bytes instead of runes.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+// foldByte maps an ASCII byte to its lower-case form, for the case-insensitive
+// scan in findFrom.
+func foldByte(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+	return c
 }
 
 // countWords counts whitespace-separated words without allocating.
