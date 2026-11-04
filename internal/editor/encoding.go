@@ -44,42 +44,147 @@ var (
 // readDocument buffers r as UTF-8 text and reports the encoding that
 // encodeDocument needs in order to write it back unchanged.
 //
-// The common UTF-8 path still streams straight into a strings.Builder so that
-// no full-size byte slice is allocated; only UTF-16 needs the bytes up front.
+// File opens do not use this: they stream straight into a Document. This is for
+// the paths that work on a string (standard input, tests).
 func readDocument(r io.Reader) (text, enc string, err error) {
-	br := bufio.NewReader(r)
-	head, _ := br.Peek(4) // a short file just yields a short head
+	enc, body, err := sniffEncoding(bufio.NewReader(r))
+	if err != nil {
+		return "", "", err
+	}
+	text, err = drainText(body)
+	if err != nil {
+		return "", "", err
+	}
+	return text, enc, nil
+}
 
+// sniffEncoding consumes the byte-order mark, if any, and returns the encoding
+// name plus a reader that yields UTF-8 text. UTF-16 is converted on the fly, so
+// even a large UTF-16 file is never held as one byte slice.
+func sniffEncoding(br *bufio.Reader) (enc string, r io.Reader, err error) {
+	head, _ := br.Peek(4) // a short file just yields a short head
 	switch {
 	case bytes.HasPrefix(head, bomUTF32LE), bytes.HasPrefix(head, bomUTF32BE):
-		return "", "", errUTF32
-
+		return "", nil, errUTF32
 	case bytes.HasPrefix(head, bomUTF16LE):
-		raw, err := io.ReadAll(br)
-		if err != nil {
-			return "", "", err
+		if _, err := br.Discard(len(bomUTF16LE)); err != nil {
+			return "", nil, err
 		}
-		text, err := decodeUTF16(raw[len(bomUTF16LE):], true)
-		return text, encUTF16LE, err
-
+		return encUTF16LE, &utf16Reader{src: br, little: true}, nil
 	case bytes.HasPrefix(head, bomUTF16BE):
-		raw, err := io.ReadAll(br)
-		if err != nil {
-			return "", "", err
+		if _, err := br.Discard(len(bomUTF16BE)); err != nil {
+			return "", nil, err
 		}
-		text, err := decodeUTF16(raw[len(bomUTF16BE):], false)
-		return text, encUTF16BE, err
-
+		return encUTF16BE, &utf16Reader{src: br, little: false}, nil
 	case bytes.HasPrefix(head, bomUTF8):
 		if _, err := br.Discard(len(bomUTF8)); err != nil {
-			return "", "", err
+			return "", nil, err
 		}
-		text, err := drainText(br)
-		return text, encUTF8BOM, err
+		return encUTF8BOM, br, nil
 	}
+	return encUTF8, br, nil
+}
 
-	text, err = drainText(br)
-	return text, encUTF8, err
+// openDocument streams r into a Document, normalising line endings and rejecting
+// data that is not text. It is how a file is opened: the text is never built as
+// one string, so opening costs the size of the file plus its line index rather
+// than twice the file and a doubling buffer.
+func openDocument(r io.Reader) (*Document, string, string, error) {
+	enc, body, err := sniffEncoding(bufio.NewReaderSize(r, 64<<10))
+	if err != nil {
+		return nil, "", "", err
+	}
+	b := newDocBuilder()
+	if _, err := io.Copy(b, body); err != nil {
+		return nil, "", "", err
+	}
+	doc, err := b.finish()
+	if err != nil {
+		return nil, "", "", err
+	}
+	return doc, b.eolStyle(), enc, nil
+}
+
+// utf16Reader converts a UTF-16 byte stream to UTF-8 as it is read. Unpaired
+// surrogates become U+FFFD, matching decodeUTF16, and a stray final byte is
+// reported as truncated data.
+type utf16Reader struct {
+	src    io.Reader
+	little bool
+
+	raw  []byte // bytes read but not yet decoded (at most one code unit)
+	buf  []byte // decoded UTF-8 not yet handed out
+	high uint16 // high surrogate waiting for its partner
+	done bool
+	err  error
+}
+
+func (r *utf16Reader) Read(p []byte) (int, error) {
+	for len(r.buf) == 0 && !r.done {
+		r.more()
+	}
+	if len(r.buf) == 0 {
+		if r.err == nil {
+			r.err = io.EOF
+		}
+		return 0, r.err
+	}
+	n := copy(p, r.buf)
+	r.buf = r.buf[n:]
+	return n, nil
+}
+
+// more reads another chunk and decodes the whole code units in it.
+func (r *utf16Reader) more() {
+	var chunk [32 << 10]byte
+	n, err := r.src.Read(chunk[:])
+	if n > 0 {
+		r.raw = append(r.raw, chunk[:n]...)
+		r.decode()
+	}
+	if err == io.EOF {
+		r.done = true
+		if r.high != 0 {
+			r.buf = utf8.AppendRune(r.buf, utf8.RuneError) // unpaired surrogate
+			r.high = 0
+		}
+		if len(r.raw) > 0 {
+			r.err = errUTF16Trunc
+		}
+		return
+	}
+	if err != nil {
+		r.done, r.err = true, err
+	}
+}
+
+// decode turns the buffered code units into UTF-8, holding back a trailing high
+// surrogate so it can be paired with the first unit of the next chunk.
+func (r *utf16Reader) decode() {
+	units := len(r.raw) / 2
+	if units == 0 {
+		return
+	}
+	us := make([]uint16, 0, units+1)
+	if r.high != 0 {
+		us = append(us, r.high)
+		r.high = 0
+	}
+	for i := 0; i < units; i++ {
+		if r.little {
+			us = append(us, binary.LittleEndian.Uint16(r.raw[i*2:]))
+		} else {
+			us = append(us, binary.BigEndian.Uint16(r.raw[i*2:]))
+		}
+	}
+	r.raw = append(r.raw[:0], r.raw[units*2:]...)
+	if n := len(us); n > 0 && us[n-1] >= 0xD800 && us[n-1] <= 0xDBFF {
+		r.high = us[n-1]
+		us = us[:n-1]
+	}
+	for _, ru := range utf16.Decode(us) {
+		r.buf = utf8.AppendRune(r.buf, ru)
+	}
 }
 
 // drainText copies r into a string, rejecting data that is not text. Without
@@ -117,28 +222,20 @@ func looksUTF16(s string) bool {
 			odd++
 		}
 	}
-	if (even+odd)*4 < len(s) {
+	return looksUTF16Counts(len(s), even, odd)
+}
+
+// looksUTF16Counts is the same judgement from a running count of NUL bytes, for
+// the streaming reader that cannot look at the whole buffer.
+func looksUTF16Counts(size, even, odd int) bool {
+	if size < 8 {
+		return false
+	}
+	if (even+odd)*4 < size {
 		return false // under 25% NULs: stray NULs in mostly-text data
 	}
 	// UTF-16LE puts the zero high byte at odd offsets, BE at even ones.
 	return even*10 < odd || odd*10 < even
-}
-
-// decodeUTF16 converts UTF-16 code units to UTF-8 (surrogate pairs included),
-// mapping unpaired surrogates to U+FFFD rather than failing the whole file.
-func decodeUTF16(b []byte, littleEndian bool) (string, error) {
-	if len(b)%2 != 0 {
-		return "", errUTF16Trunc
-	}
-	units := make([]uint16, len(b)/2)
-	for i := range units {
-		if littleEndian {
-			units[i] = binary.LittleEndian.Uint16(b[i*2:])
-		} else {
-			units[i] = binary.BigEndian.Uint16(b[i*2:])
-		}
-	}
-	return string(utf16.Decode(units)), nil
 }
 
 // encodeDocument renders s in enc so that a saved file keeps its original
