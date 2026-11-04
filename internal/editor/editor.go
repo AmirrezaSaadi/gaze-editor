@@ -57,9 +57,10 @@ type Editor struct {
 	code *codeView
 	doc  *Document
 
-	editSeq   uint64
-	lastInfo  string // last text set on the readout, to skip no-op relayouts
-	lastTitle string
+	editSeq    uint64
+	statsKnown bool   // whether the word/character counts are current
+	lastInfo   string // last text set on the readout, to skip no-op relayouts
+	lastTitle  string
 
 	findBar    *fyne.Container
 	findEntry  *widget.Entry
@@ -349,17 +350,15 @@ func (e *Editor) themeItem(name string) *fyne.MenuItem {
 	return item
 }
 
-// onChanged marks the buffer dirty, refreshes the chrome and snapshots a
-// recovery copy after user edits.
-
-// updateStatsForChange keeps typing cheap in large buffers: small files are
-// recounted immediately, big ones once the user pauses.
+// updateStatsForChange keeps typing cheap in a big buffer: small files are
+// recounted immediately, bigger ones once the user pauses.
 func (e *Editor) updateStatsForChange() {
-	if e.largeFile || e.doc == nil {
+	if e.doc == nil {
 		return
 	}
 	if e.doc.Len() <= statsSyncLimit {
 		e.updateStats()
+		e.updateInfo()
 		return
 	}
 	if e.statsTimer != nil {
@@ -376,14 +375,36 @@ func (e *Editor) updateStatsForChange() {
 	})
 }
 
-// updateStats recomputes the cached word/character counts. Large-file mode skips
-// it: the scan is O(buffer) and the counts are not shown.
+// updateStats recomputes the cached word/character counts. A document big enough
+// to make the scan noticeable is counted off the UI goroutine instead, and the
+// readout leaves the numbers out until they arrive.
 func (e *Editor) updateStats() {
-	if e.largeFile || e.doc == nil {
-		e.statChars, e.statWords = 0, 0
+	if e.doc == nil {
+		e.statChars, e.statWords, e.statsKnown = 0, 0, false
+		return
+	}
+	if e.doc.Len() > statsSyncLimit {
+		e.countStatsAsync()
 		return
 	}
 	e.statChars, e.statWords = e.doc.counts()
+	e.statsKnown = true
+}
+
+// countStatsAsync counts a big document off the UI goroutine. The count is
+// dropped if the document changed while it ran: the next pause counts again.
+func (e *Editor) countStatsAsync() {
+	doc, seq := e.doc.Snapshot(), e.editSeq
+	go func() {
+		chars, words := doc.counts()
+		fyne.Do(func() {
+			if e.doc == nil || e.editSeq != seq {
+				return
+			}
+			e.statChars, e.statWords, e.statsKnown = chars, words, true
+			e.updateInfo()
+		})
+	}()
 }
 
 // updateTitle refreshes the window title from the current file and dirty flag.
@@ -416,10 +437,13 @@ func (e *Editor) updateInfo() {
 	tail := fmt.Sprintf("%s · %s%s · %d%%", e.eolLabel(), e.indentLabel(),
 		e.encodingSuffix(), zoomPercent(e.themes.Zoom()))
 	var out string
-	if e.largeFile {
-		// No live counts: they would mean rescanning the whole buffer.
-		out = pos + " · " + tail + " · large"
-	} else {
+	switch {
+	case !e.statsKnown:
+		// The counts of a big document are still being worked out.
+		out = pos + " · " + tail
+	case e.largeFile:
+		out = fmt.Sprintf("%s · %dw · %dc · %s · large", pos, e.statWords, e.statChars, tail)
+	default:
 		out = fmt.Sprintf("%s · %dw · %dc · %s", pos, e.statWords, e.statChars, tail)
 	}
 	if out == e.lastInfo {
@@ -660,7 +684,7 @@ func (e *Editor) zoom(direction int) {
 	} else {
 		e.themes.ZoomOut()
 	}
-	e.refreshLargeLayout()
+	e.refreshMetrics()
 	e.updateInfo()
 	e.setStatus(fmt.Sprintf("zoom %d%%", zoomPercent(e.themes.Zoom())))
 }
@@ -668,7 +692,7 @@ func (e *Editor) zoom(direction int) {
 // ResetZoom restores the font zoom to 100%.
 func (e *Editor) ResetZoom() {
 	e.themes.ResetZoom()
-	e.refreshLargeLayout()
+	e.refreshMetrics()
 	e.updateInfo()
 	e.setStatus("zoom 100%")
 }
@@ -688,10 +712,10 @@ func (e *Editor) ToggleTheme() {
 // CycleTheme advances to the next theme.
 func (e *Editor) CycleTheme() { e.SetTheme(e.themes.Next()) }
 
-// refreshLargeLayout re-measures the window after the text size changed: a line
-// is a different number of pixels tall, so the window has to be rebuilt.
-func (e *Editor) refreshLargeLayout() {
-	if e.largeFile && e.code != nil {
+// refreshMetrics re-measures the editing surface after a theme or zoom change:
+// a line is a different number of pixels tall, so every row moves.
+func (e *Editor) refreshMetrics() {
+	if e.code != nil {
 		e.code.refreshMetrics()
 	}
 }
@@ -703,7 +727,7 @@ func (e *Editor) syncTheme() {
 	if menu := e.win.MainMenu(); menu != nil {
 		menu.Refresh()
 	}
-	e.refreshLargeLayout()
+	e.refreshMetrics()
 	e.updateInfo()
 	e.setStatus("theme: " + e.themes.Current())
 }

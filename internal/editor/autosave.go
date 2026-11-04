@@ -67,6 +67,11 @@ func (e *Editor) autosaveEvery() time.Duration {
 	return autosaveInterval
 }
 
+// autosaveDue reports whether enough time has passed for another snapshot.
+func (e *Editor) autosaveDue(now time.Time) bool {
+	return now.Sub(e.lastAutosave) >= e.autosaveEvery()
+}
+
 // maybeAutosave writes a recovery snapshot of the dirty buffer, rate-limited so
 // it can be called on every keystroke. Untitled buffers are included: they have
 // no other copy anywhere, so they need this most.
@@ -75,7 +80,7 @@ func (e *Editor) maybeAutosave() {
 		return
 	}
 	now := time.Now()
-	if now.Sub(e.lastAutosave) < e.autosaveEvery() {
+	if !e.autosaveDue(now) {
 		return
 	}
 	e.lastAutosave = now

@@ -179,6 +179,9 @@ func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 	// worth keeping (counts, snapshots, the save-time trim).
 	e.largeFile = mode.large()
 	e.editSeq++ // a new document invalidates any save request still in flight
+	// The counts on screen belong to the previous document; drop them until this
+	// one has been counted.
+	e.statsKnown = false
 	e.loading = true
 	e.doc = NewDocument(text)
 	e.resetUndo()
