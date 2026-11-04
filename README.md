@@ -20,11 +20,12 @@ day-to-day features you actually reach for — no plugin system, no bloat.
 - **Autosave recovery** — dirty buffers are snapshotted to the cache dir and
   offered back after a crash, untitled buffers included
 - **One editing surface for every file size** — the text lives in a 64 KB page
-  store with a byte-offset line index, and Gaze draws the lines on screen
-  itself, so a 24 MB / 600k-line file opens in about 80 ms using ~5 MB of heap
-  and costs the same to type in as a shopping list. Wrap, selection, undo,
-  find/replace across the whole file, crash recovery and saving all behave the
-  same at any size; over 16 MiB Gaze asks first, and over 256 MiB it refuses
+  store with a block-indexed line table, and Gaze draws the lines on screen
+  itself, so cost tracks the screen rather than the file. Wrap, selection,
+  undo, find/replace across the whole file, crash recovery and saving behave
+  the same at any size: a 256 MB / 5.5M-line file opens in about 2 s using
+  ~340 MB of memory, and a keystroke in it costs ~0.1 ms. Over 16 MiB Gaze
+  asks first, and over 1 GiB it refuses
 - **Save guard** — a save warns when the file was changed on disk since it was
   opened, rather than overwriting it silently
 - **Session restore** — reopen the last file and caret position on a bare launch
@@ -134,10 +135,13 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
 - No duplicate buffer: dirty state is a flag, not a second copy of the file.
 - Only ~35 `canvas.Text` objects exist no matter how big the file is: scrolling
   moves them, so cost tracks the screen, not the document. Re-drawing a page
-  costs ~0.3 ms; a keystroke in a 600k-line file costs ~1.4 ms because the line
-  index shifts in place instead of being rebuilt.
-- File loads stream through a `strings.Builder`; saves stream the document's
-  pages straight to disk, so neither builds a full-size `[]byte` or string copy.
+  costs ~0.3 ms.
+- Opening streams the file into pages: it is never held as one string first, so
+  a 256 MB file costs ~340 MB of heap and a 1 GB file ~1.3 GB, at roughly
+  200 MB/s. Saves stream the document's pages straight to disk.
+- Line starts are stored in blocks of 4096, so typing shifts one base per block
+  instead of one offset per line: ~0.1 ms per keystroke in a 5.5M-line file.
+  A line break still rebuilds that index, which costs ~35 ms there.
 - Word and character counts of a big document are computed off the UI goroutine
   (debounced), and its crash-recovery snapshots are streamed page by page.
 - `runtime/debug.FreeOSMemory` runs after open/save so the resident set does
@@ -159,7 +163,9 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
   no block indent over a multi-line selection yet.
 - Large-file mode (over 16 MiB) keeps trailing whitespace: trimming on save
   would have to rewrite the whole document to mirror it back into the buffer.
-- Files over 256 MiB are refused rather than loaded.
+- Files over 1 GiB are refused rather than loaded.
+- Opening a very large file blocks the window while it streams in (about 2 s for
+  256 MB, 9 s for 1 GB); there is no progress bar yet.
 - BOM-less UTF-16 is detected and refused with an explanatory message rather
   than decoded, because guessing the byte order of an unmarked file is not safe.
 
