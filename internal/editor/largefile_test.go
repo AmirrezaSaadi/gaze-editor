@@ -160,9 +160,11 @@ func TestLargeFileCountsFollowEdits(t *testing.T) {
 
 	e.code.setCaret(pos{row: 0, col: 0})
 	test.Type(e.code, "extra ")
-	waitFor(t, "the recount", func() bool { return e.statsKnown && e.statWords == 60001 })
-	if !strings.Contains(e.info.Text, "60001w") {
-		t.Fatalf("status readout = %q, want the new count", e.info.Text)
+	// The readout is what the user sees, so wait for it rather than for the
+	// cached numbers it is built from.
+	waitFor(t, "the recount", func() bool { return strings.Contains(e.info.Text, "60001w") })
+	if !e.statsKnown || e.statWords != 60001 {
+		t.Fatalf("counts = %v/%dw, want 60001w", e.statsKnown, e.statWords)
 	}
 }
 

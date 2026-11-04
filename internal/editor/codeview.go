@@ -74,6 +74,13 @@ type codeView struct {
 	rows      []int
 	rowsCells int // wrap width the index was built for
 
+	// Text metrics are measured once per text size: fyne.MeasureText is far too
+	// slow to call per line while indexing a multi-million-line document.
+	metricSize    float32
+	metricLineH   float32
+	metricCharW   float32
+	metricsCached bool
+
 	caret  pos
 	anchor pos
 
@@ -161,10 +168,13 @@ func (v *codeView) setWrap(on bool) {
 // metrics returns the height of a line and the width of a character, measured
 // from the current theme exactly the way Fyne lays monospace text out.
 func (v *codeView) metrics() (lineH, charW float32) {
-	th := v.Theme()
-	size := th.Size(theme.SizeNameText)
-	style := fyne.TextStyle{Monospace: true}
-	return fyne.MeasureText("A", size, style).Height, fyne.MeasureText("A", size, style).Width
+	size := v.Theme().Size(theme.SizeNameText)
+	if v.metricsCached && v.metricSize == size {
+		return v.metricLineH, v.metricCharW
+	}
+	m := fyne.MeasureText("A", size, fyne.TextStyle{Monospace: true})
+	v.metricSize, v.metricLineH, v.metricCharW, v.metricsCached = size, m.Height, m.Width, true
+	return m.Height, m.Width
 }
 
 // inset is the padding between the widget edge and the first character column.
@@ -229,16 +239,25 @@ func (v *codeView) cellsOf(row int) int {
 // window is still split). It returns the number of rows; when sink is nil it only
 // counts, which is what keeps a full index pass allocation-free.
 func (v *codeView) wrapScan(row int, sink func(cell int)) int {
+	return v.scanCells(v.doc.LineText(row), v.wrapCells(), sink)
+}
+
+// scanCells reports how many visual rows a line occupies, calling sink with the
+// cell each row starts at. It takes the wrap width so that indexing a whole
+// document measures the window once instead of per line.
+func (v *codeView) scanCells(line string, maxW int, sink func(cell int)) int {
 	if sink != nil {
 		sink(0)
 	}
 	if !v.wrap {
 		return 1
 	}
-	maxW := v.wrapCells()
+	if maxW < 1 {
+		maxW = 1
+	}
 	count := 1
 	cell, rowStart, lastSpace := 0, 0, -1
-	for _, r := range v.doc.LineText(row) {
+	for _, r := range line {
 		w := 1
 		if r == '\t' {
 			w = v.ed.indentWidth - cell%v.ed.indentWidth
@@ -361,65 +380,89 @@ func (v *codeView) rebuildRows() {
 		v.rows = nil
 		return
 	}
-	n := v.doc.LineCount()
-	rows := make([]int, n+1)
-	total := 0
-	for i := 0; i < n; i++ {
+	rows := make([]int, v.doc.LineCount()+1)
+	maxW := v.wrapCells()
+	total, i := 0, 0
+	// The pages are walked directly: asking the document for each line by number
+	// would search the page and line indexes per line, which for a
+	// multi-million-line file costs more than the wrap arithmetic itself.
+	_ = v.doc.eachLine(func(line string, _ bool) error {
 		rows[i] = total
-		total += v.chunksOf(i)
-	}
-	rows[n] = total
+		i++
+		// A line no longer than the window cannot wrap, and a line without tabs
+		// is never wider in cells than in bytes: skip the rune walk.
+		if len(line) <= maxW && strings.IndexByte(line, '\t') < 0 {
+			total++
+			return nil
+		}
+		total += v.scanCells(line, maxW, nil)
+		return nil
+	})
+	rows[i] = total
 	v.rows = rows
 	v.rowsCells = v.wrapCells()
 }
 
 // patchRows updates the visual row index after the lines [r0, r0+oldLines) were
-// replaced by newLines lines. Typing keeps the line count, so the common case is
-// an in-place shift of the totals below the edit.
+// replaced by newLines lines, where oldLines and newLines count the line breaks in
+// the replaced and inserted text.
+//
+// The index holds the first visual row of every line, so an edit only moves the
+// entries below it by the same amount: the starts of the lines the edit touched
+// are recomputed, the rest are shifted by one delta.
 func (v *codeView) patchRows(r0, oldLines, newLines int) {
 	if !v.wrap || v.doc == nil {
 		return
 	}
 	n := v.doc.LineCount()
-	if len(v.rows) != n+1 || v.rowsCells != v.wrapCells() || oldLines > 2000 || newLines > 2000 {
+	nOld := len(v.rows) - 1 // lines before this edit
+	// The index still describes the document before the edit.
+	if len(v.rows) != n+1-(newLines-oldLines) ||
+		v.rowsCells != v.wrapCells() || oldLines > 2000 || newLines > 2000 {
 		v.rebuildRows()
 		return
 	}
 	if r0 < 0 {
 		r0 = 0
 	}
-	if r0+oldLines > n {
+	if r0+oldLines > nOld {
 		v.rebuildRows()
 		return
 	}
-	oldEnd := v.rows[r0+oldLines]
-	if newLines == oldLines {
-		acc := v.rows[r0]
-		for k := 1; k <= newLines; k++ {
-			acc += v.chunksOf(r0 + k - 1)
-			v.rows[r0+k] = acc
-		}
-		if delta := acc - oldEnd; delta != 0 {
-			for i := r0 + oldLines + 1; i < len(v.rows); i++ {
-				v.rows[i] += delta
-			}
-		}
-		return
+
+	// The first line after the replaced block: where it starts now and where it
+	// used to start are what the shift below is made of.
+	tailFrom, tailTo := r0+oldLines+1, r0+newLines+1
+	oldTail, hasTail := 0, tailFrom <= nOld
+	if hasTail {
+		oldTail = v.rows[tailFrom]
+	}
+	grow := newLines - oldLines
+	if grow > 0 {
+		v.rows = append(v.rows, make([]int, grow)...)
+	}
+	copy(v.rows[tailTo:], v.rows[tailFrom:])
+	if grow < 0 {
+		v.rows = v.rows[:len(v.rows)+grow]
 	}
 
-	// A line was added or removed: splice the totals.
-	out := make([]int, n+1)
-	copy(out, v.rows[:r0+1])
+	// Recompute the starts of the lines the edit touched, then move everything
+	// below them by however much the block grew.
 	acc := v.rows[r0]
 	for k := 1; k <= newLines; k++ {
 		acc += v.chunksOf(r0 + k - 1)
-		out[r0+k] = acc
+		v.rows[r0+k] = acc
 	}
-	delta := acc - oldEnd
-	for i := r0 + oldLines + 1; i <= n; i++ {
-		out[i-oldLines+newLines] = v.rows[i] + delta
+	end := acc + v.chunksOf(r0+newLines)
+	if !hasTail {
+		v.rows[len(v.rows)-1] = end // the edit reached the end of the document
+		return
 	}
-	v.rows = out
+	if delta := end - oldTail; delta != 0 {
+		for i := tailTo; i < len(v.rows); i++ {
+			v.rows[i] += delta
+		}
+	}
 }
 
 // applyReplace changes the document and keeps the visual row index in step.
