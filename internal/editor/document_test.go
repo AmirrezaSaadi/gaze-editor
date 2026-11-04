@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"fmt"
 	"math/rand"
 	"strings"
 	"testing"
@@ -179,4 +180,68 @@ func TestDocumentEachLine(t *testing.T) {
 			t.Fatalf("line %d hasNewline = %v, want %v", i, newlines[i], wantNewline)
 		}
 	}
+}
+
+// The line index is two levels deep: past lineBlock lines an edit has to keep
+// both the block bases and the offsets inside them right.
+func TestDocumentLineIndexAcrossBlocks(t *testing.T) {
+	const lines = 3*lineBlock + 7
+	var sb strings.Builder
+	for i := 0; i < lines; i++ {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		fmt.Fprintf(&sb, "line %d of the document", i)
+	}
+	want := sb.String()
+	d := NewDocument(want)
+	if got := d.LineCount(); got != lines {
+		t.Fatalf("LineCount = %d, want %d", got, lines)
+	}
+
+	check := func(what string) {
+		t.Helper()
+		if got := d.Text(); got != want {
+			t.Fatalf("%s: text = %q, want %q", what, got, want)
+		}
+		if got, wantN := d.LineCount(), strings.Count(want, "\n")+1; got != wantN {
+			t.Fatalf("%s: LineCount = %d, want %d", what, got, wantN)
+		}
+		off := 0
+		for i := 0; i < d.LineCount(); i++ {
+			if got := d.LineStart(i); got != off {
+				t.Fatalf("%s: LineStart(%d) = %d, want %d", what, i, got, off)
+			}
+			off += len(d.LineText(i)) + 1
+		}
+		for _, at := range []int{0, 5, len(want) / 3, len(want) / 2, len(want) - 1} {
+			if got, wantN := d.LineOf(at), strings.Count(want[:at], "\n"); got != wantN {
+				t.Fatalf("%s: LineOf(%d) = %d, want %d", what, at, got, wantN)
+			}
+		}
+	}
+	check("loaded")
+
+	// Typing shifts every later line start by one byte; a line break inserts an
+	// entry in the middle of the index; deleting shifts it back.
+	at := d.LineStart(lineBlock*2 + 3)
+	d.ReplaceRange(at, at, "xyz")
+	want = want[:at] + "xyz" + want[at:]
+	check("typed")
+
+	at = d.LineStart(lineBlock*3 + 1)
+	d.ReplaceRange(at, at, "\n")
+	want = want[:at] + "\n" + want[at:]
+	check("line break")
+
+	from := d.LineStart(1)
+	d.ReplaceRange(from, from+5, "")
+	want = want[:from] + want[from+5:]
+	check("deleted")
+
+	// Joining lines removes an entry, and the joined line has its own length.
+	from = d.LineStart(lineBlock + 2)
+	d.ReplaceRange(from-1, from, "")
+	want = want[:from-1] + want[from:]
+	check("joined")
 }
