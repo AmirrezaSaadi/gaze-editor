@@ -34,8 +34,11 @@ const (
 var (
 	// LargeFileBytes is where opening asks first and switches to large-file mode.
 	LargeFileBytes int64 = 16 << 20
-	// MaxOpenBytes is the hard limit; anything larger is refused.
-	MaxOpenBytes int64 = 256 << 20
+	// MaxOpenBytes is the hard limit; anything larger is refused. Opening a file
+	// costs its own size in page storage plus eight bytes per line, so this is
+	// about what a machine with a few gigabytes free can take, not about what
+	// the renderer can draw (which is always one screenful).
+	MaxOpenBytes int64 = 1 << 30
 )
 
 // openMode records how a document was opened.
@@ -106,8 +109,8 @@ func (e *Editor) confirmOpenSize(name string, size int64, proceed func(openMode)
 		e.reportTooLarge(name, size)
 	case size >= LargeFileBytes:
 		dialog.ShowConfirm("Open large file?",
-			fmt.Sprintf("%s is %s.\n\nGaze can open it in large-file mode, which skips the live word and character counts and the save-time trim so the whole buffer is not rescanned or copied, and keeps only a short undo history. Continue?",
-				name, humanBytes(size)),
+			fmt.Sprintf("%s is %s.\n\nGaze can open it in large-file mode: the text is kept in 64 KB pages and only the lines on screen are drawn, so editing stays fast. Opening it will hold about %s of memory and take a few seconds. Continue?",
+				name, humanBytes(size), humanBytes(size)),
 			func(ok bool) {
 				if !ok {
 					e.setStatus("open cancelled — " + name)
@@ -128,7 +131,7 @@ func (e *Editor) reportTooLarge(name string, size int64) {
 		detail = fmt.Sprintf("%s is %s, over Gaze's %s limit.", name, humanBytes(size), humanBytes(MaxOpenBytes))
 	}
 	dialog.ShowInformation("File too large",
-		detail+"\n\nGaze keeps the document in memory and indexes every line, so past this size the index alone would cost more than the window can spare. A tool built for huge files (less, grep, or an editor that memory-maps them) is a better fit.",
+		detail+"\n\nGaze holds the whole document in memory (about one and a half times its size once the line index is counted), so this is where it stops. A tool built for files this big (less, grep, or an editor that memory-maps them) is a better fit.",
 		e.win)
 	e.setStatus("refused " + name + " — too large (over " + humanBytes(MaxOpenBytes) + ")")
 }
@@ -165,15 +168,24 @@ func (e *Editor) setContent(text, path, enc string) {
 	e.setContentAs(text, path, enc, openNormal)
 }
 
-// setContentAs installs a document and applies the open mode it was approved for.
+// setContentAs installs a string as the buffer and applies the open mode it was
+// approved for.
 func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 	text, eol := normalizeEOL(text)
+	e.setDocumentAs(NewDocument(text), path, eol, enc, mode)
+}
+
+// setDocumentAs installs an already-built document, which is how a file that was
+// streamed in (rather than read into a string) reaches the editor.
+func (e *Editor) setDocumentAs(doc *Document, path, eol, enc string, mode openMode) {
 	e.eol = eol
 	e.enc = enc
 	if e.enc == "" {
 		e.enc = encUTF8
 	}
-	e.indentUseTabs, e.indentWidth = detectIndent(text)
+	// The indent style is settled by the first indented line, so only the head of
+	// the document is looked at.
+	e.indentUseTabs, e.indentWidth = detectIndent(doc.TextRange(0, indentScanLimit))
 
 	// Every file lives in a document; the open mode only decides which chrome is
 	// worth keeping (counts, snapshots, the save-time trim).
@@ -183,7 +195,7 @@ func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 	// one has been counted.
 	e.statsKnown = false
 	e.loading = true
-	e.doc = NewDocument(text)
+	e.doc = doc
 	e.resetUndo()
 	e.currentFile = path
 	e.dirty = false
@@ -191,7 +203,7 @@ func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 	e.code.setDoc(e.doc)
 	e.loading = false
 	e.refreshChrome()
-	freeMemory(len(text))
+	freeMemory(doc.Len())
 }
 
 // confirmDiscard runs proceed immediately, or first asks the user to confirm
@@ -254,12 +266,12 @@ func (e *Editor) OpenFile() {
 
 			e.confirmOpenSize(name, size, func(mode openMode) {
 				defer r.Close()
-				text, enc, err := readDocument(&limitReader{r: r, limit: MaxOpenBytes})
+				doc, eol, enc, err := openDocument(&limitReader{r: r, limit: MaxOpenBytes})
 				if err != nil {
 					e.reportOpenError(err, name)
 					return
 				}
-				e.loadContentAs(path, text, enc, mode)
+				e.loadDocumentAs(path, doc, eol, enc, mode)
 			})
 		}, e.win)
 		d.Show()
@@ -301,12 +313,12 @@ func (e *Editor) openPath(path string, mode openMode, line, col int) {
 	}
 	defer f.Close()
 
-	text, enc, err := readDocument(&limitReader{r: f, limit: MaxOpenBytes})
+	doc, eol, enc, err := openDocument(&limitReader{r: f, limit: MaxOpenBytes})
 	if err != nil {
 		e.reportOpenError(err, filepath.Base(path))
 		return
 	}
-	e.loadContentAs(path, text, enc, mode)
+	e.loadDocumentAs(path, doc, eol, enc, mode)
 
 	if line <= 0 {
 		return
@@ -325,6 +337,13 @@ func (e *Editor) loadContent(path, text, enc string) {
 
 // loadContentAs is loadContent with the open mode the file was approved for.
 func (e *Editor) loadContentAs(path, text, enc string, mode openMode) {
+	text, eol := normalizeEOL(text)
+	e.loadDocumentAs(path, NewDocument(text), eol, enc, mode)
+}
+
+// loadDocumentAs is loadContentAs for a document that was streamed in, so a big
+// file does not have to pass through a string to be installed.
+func (e *Editor) loadDocumentAs(path string, doc *Document, eol, enc string, mode openMode) {
 	e.recordDiskState(path)
 	suffix := ""
 	if mode.large() {
@@ -342,7 +361,7 @@ func (e *Editor) loadContentAs(path, text, enc string, mode openMode) {
 					e.setStatus("recovered " + path + suffix)
 				} else {
 					clearRecovery(path)
-					e.setContentAs(text, path, enc, mode)
+					e.setDocumentAs(doc, path, eol, enc, mode)
 					e.setStatus("opened " + path + suffix)
 				}
 				e.addRecent(path)
@@ -350,7 +369,7 @@ func (e *Editor) loadContentAs(path, text, enc string, mode openMode) {
 		return
 	}
 	clearRecovery(path)
-	e.setContentAs(text, path, enc, mode)
+	e.setDocumentAs(doc, path, eol, enc, mode)
 	e.addRecent(path)
 	e.setStatus("opened " + path + suffix)
 }
