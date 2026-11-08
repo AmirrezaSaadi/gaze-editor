@@ -34,11 +34,13 @@ const (
 var (
 	// LargeFileBytes is where opening asks first and switches to large-file mode.
 	LargeFileBytes int64 = 16 << 20
-	// MaxOpenBytes is the hard limit; anything larger is refused. Opening a file
-	// costs its own size in page storage plus eight bytes per line, so this is
-	// about what a machine with a few gigabytes free can take, not about what
-	// the renderer can draw (which is always one screenful).
-	MaxOpenBytes int64 = 1 << 30
+	// MaxOpenBytes is the hard limit; anything larger is refused. A file this big
+	// is memory-mapped rather than copied, so what it costs is the line index
+	// (four bytes a line) and, when wrapping, a visual-row index (eight bytes a
+	// line more): a couple of hundred megabytes for a file of ordinary line
+	// length, not the file's own size. The limit is where that bookkeeping stops
+	// being reasonable, not where the renderer does (it draws one screenful).
+	MaxOpenBytes int64 = 2 << 30
 )
 
 // openMode records how a document was opened.
@@ -109,8 +111,8 @@ func (e *Editor) confirmOpenSize(name string, size int64, proceed func(openMode)
 		e.reportTooLarge(name, size)
 	case size >= LargeFileBytes:
 		dialog.ShowConfirm("Open large file?",
-			fmt.Sprintf("%s is %s.\n\nGaze can open it in large-file mode: the text is kept in 64 KB pages and only the lines on screen are drawn, so editing stays fast. Opening it will hold about %s of memory and take a few seconds. Continue?",
-				name, humanBytes(size), humanBytes(size)),
+			fmt.Sprintf("%s is %s.\n\nGaze opens a file this big by memory-mapping it, so the text itself is never copied into memory, and it draws only the lines on screen. What it does keep is a line index, which costs memory in proportion to the number of lines. Reading it happens in the background, so the window stays usable while it loads. Continue?",
+				name, humanBytes(size)),
 			func(ok bool) {
 				if !ok {
 					e.setStatus("open cancelled — " + name)
@@ -131,7 +133,7 @@ func (e *Editor) reportTooLarge(name string, size int64) {
 		detail = fmt.Sprintf("%s is %s, over Gaze's %s limit.", name, humanBytes(size), humanBytes(MaxOpenBytes))
 	}
 	dialog.ShowInformation("File too large",
-		detail+"\n\nGaze holds the whole document in memory (about one and a half times its size once the line index is counted), so this is where it stops. A tool built for files this big (less, grep, or an editor that memory-maps them) is a better fit.",
+		detail+"\n\nGaze memory-maps what it opens, so the file's own bytes cost almost nothing, but it still indexes every line and cannot draw or search a document without that index. This is where building it stops being reasonable; a tool built to stream a file (less, grep, or a database) is a better fit for one this big.",
 		e.win)
 	e.setStatus("refused " + name + " — too large (over " + humanBytes(MaxOpenBytes) + ")")
 }

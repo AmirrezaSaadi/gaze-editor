@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unsafe"
 )
 
 // docPageSize is the target size of a document page. Pages are the unit of a
@@ -29,6 +30,67 @@ type Document struct {
 	starts []int      // byte offset of each page in document space
 	lines  *lineIndex // byte offset of each line start in document space
 	size   int
+
+	// region is the memory mapping the pages are views of, when the document was
+	// opened from a mapped file. The pages of a mapped document point into it
+	// instead of holding copies, which is what makes a multi-gigabyte file cheap
+	// to open: only the pages actually read are in memory, and the kernel brings
+	// them back from the page cache rather than the heap.
+	//
+	// The mapping is never released. Undo history, snapshots and in-flight saves
+	// hold substrings of these pages, and Go gives no way to learn when the last
+	// of them is dropped, so unmapping would risk reading freed memory. Address
+	// space is what it costs, which is free on a 64-bit machine.
+	region []byte
+}
+
+// mapped reports whether the document's pages point into a file mapping.
+func (d *Document) mapped() bool { return d != nil && d.region != nil }
+
+// pageView is a string over b without copying. It is valid for as long as the
+// mapping it comes from is alive, which for a document is the whole process.
+func pageView(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(&b[0], len(b))
+}
+
+// indexMapped builds a document over a mapped file. The bytes are already text
+// with LF line endings — mappedFile checked that — so nothing is copied or
+// rewritten: the pages are views of the mapping and the line index is built by
+// walking it.
+func indexMapped(region []byte) *Document {
+	d := &Document{region: region, size: len(region)}
+	var lines lineIndexBuilder
+	lines.add(0)
+	for off := 0; ; {
+		k := bytes.IndexByte(region[off:], '\n')
+		if k < 0 {
+			break
+		}
+		off += k + 1
+		lines.add(off)
+	}
+	d.lines = lines.finish()
+
+	n := (len(region) + docPageSize - 1) / docPageSize
+	if n == 0 {
+		d.pages, d.starts = []string{""}, []int{0}
+		return d
+	}
+	d.pages = make([]string, n)
+	d.starts = make([]int, n)
+	for i := 0; i < n; i++ {
+		off := i * docPageSize
+		end := off + docPageSize
+		if end > len(region) {
+			end = len(region)
+		}
+		d.pages[i] = pageView(region[off:end])
+		d.starts[i] = off
+	}
+	return d
 }
 
 // NewDocument builds a document over text. The pages are substrings of text, so
@@ -50,7 +112,7 @@ func NewDocument(text string) *Document {
 // as such instead of called binary.
 type docBuilder struct {
 	pages []string
-	lines []int // byte offset of each line start; starts with 0
+	lines lineIndexBuilder
 	size  int
 	page  []byte
 
@@ -60,7 +122,9 @@ type docBuilder struct {
 }
 
 func newDocBuilder() *docBuilder {
-	return &docBuilder{lines: []int{0}}
+	b := &docBuilder{}
+	b.lines.add(0)
+	return b
 }
 
 // Write normalises line endings and appends the bytes to the current page. Whole
@@ -135,7 +199,7 @@ func (b *docBuilder) appendBytes(p []byte) {
 			if k < 0 {
 				break
 			}
-			b.lines = append(b.lines, b.size+base+off+k+1)
+			b.lines.add(b.size + base + off + k + 1)
 			off += k + 1
 		}
 		if len(b.page) >= docPageSize {
@@ -149,7 +213,7 @@ func (b *docBuilder) appendBytes(p []byte) {
 func (b *docBuilder) append(c byte) {
 	b.page = append(b.page, c)
 	if c == '\n' {
-		b.lines = append(b.lines, b.size+len(b.page))
+		b.lines.add(b.size + len(b.page))
 	}
 	if len(b.page) >= docPageSize {
 		b.flush()
@@ -176,7 +240,7 @@ func (b *docBuilder) finish() (*Document, error) {
 		}
 		return nil, errBinary
 	}
-	d := &Document{size: b.size, pages: b.pages, lines: newLineIndex(b.lines)}
+	d := &Document{size: b.size, pages: b.pages, lines: b.lines.finish()}
 	if len(d.pages) == 0 {
 		d.pages = []string{""}
 	}
@@ -227,6 +291,32 @@ const lineBlock = 4096
 type lineIndex struct {
 	rel  []int32 // offset within the block
 	base []int64 // absolute offset of the first line of each block
+}
+
+// lineIndexBuilder fills a lineIndex as line starts go by, which keeps the peak
+// memory of a big open at what the index actually needs: collecting the offsets in
+// an []int first would cost eight bytes per line on top of the four the index
+// keeps, and for a file with tens of millions of lines that is the difference
+// between opening and swapping.
+type lineIndexBuilder struct {
+	rel  []int32
+	base []int64
+}
+
+// add records the absolute byte offset of the next line start.
+func (b *lineIndexBuilder) add(abs int) {
+	if len(b.rel)%lineBlock == 0 {
+		b.base = append(b.base, int64(abs))
+	}
+	b.rel = append(b.rel, int32(int64(abs)-b.base[len(b.base)-1]))
+}
+
+// finish seals the index.
+func (b *lineIndexBuilder) finish() *lineIndex {
+	if len(b.rel) == 0 {
+		b.add(0)
+	}
+	return &lineIndex{rel: b.rel, base: b.base}
 }
 
 // newLineIndex builds an index from absolute line starts.
@@ -484,6 +574,9 @@ func (d *Document) Window(startLine, count int) (string, int) {
 func (d *Document) ReplaceRange(from, to int, repl string) {
 	if from < 0 {
 		from = 0
+	}
+	if from > d.size {
+		from = d.size
 	}
 	if to > d.size {
 		to = d.size

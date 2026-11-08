@@ -595,6 +595,9 @@ func (e *Editor) ToggleWrap() {
 	e.wrap = !e.wrap
 	e.app.Preferences().SetBool(prefWrap, e.wrap)
 	e.applyWrap()
+	if e.code != nil && e.wrap && !e.code.wrap {
+		e.setStatus("word wrap stays off — this file has too many lines to reflow")
+	}
 }
 
 // ToggleTrim flips trim-trailing-space-on-save and persists the choice.
@@ -677,18 +680,28 @@ func (e *Editor) OutdentLine() {
 	}
 }
 
-// applyLineEdit installs a whole-buffer result, keeping the caret in place.
-// widget.Entry has no range-edit API, so line operations rewrite via SetText,
-// which clears Entry's own history — the snapshot is what makes them undoable.
+// wrapIndexMaxLines is the line count above which soft wrapping is not offered.
+// Wrapping needs a visual-row index over the whole document, which costs eight
+// bytes a line: at a few million lines that is nothing, at a hundred million it is
+// most of a gigabyte, so past this the choice is reported as unavailable rather
+// than paid for.
+const wrapIndexMaxLines = 8 << 20
 
+// wrapAllowed reports whether the document is small enough to reflow.
+func (e *Editor) wrapAllowed(doc *Document) bool {
+	return doc == nil || doc.LineCount() <= wrapIndexMaxLines
+}
+
+// applyWrap hands the effective wrap setting to the code view and the menu.
 func (e *Editor) applyWrap() {
+	on := e.wrap && e.wrapAllowed(e.doc)
 	if e.code != nil {
 		// The code view wraps itself: it splits a line into visual rows of the
 		// width that fits, so a large file can be wrapped too.
-		e.code.setWrap(e.wrap)
+		e.code.setWrap(on)
 	}
 	if e.wrapItem != nil {
-		e.wrapItem.Checked = e.wrap
+		e.wrapItem.Checked = on
 		if menu := e.win.MainMenu(); menu != nil {
 			menu.Refresh()
 		}
