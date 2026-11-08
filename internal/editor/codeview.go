@@ -123,14 +123,31 @@ func (v *codeView) CreateRenderer() fyne.WidgetRenderer {
 }
 
 // setDoc installs a document and puts the view back at the top.
-func (v *codeView) setDoc(d *Document) {
+// docIndex is a visual-row index built for a known wrap width, so a document that
+// was parsed on a background goroutine can be installed without the UI goroutine
+// spending hundreds of milliseconds indexing it afterwards.
+type docIndex struct {
+	rows  []int
+	cells int
+}
+
+func (v *codeView) setDoc(d *Document) { v.setDocRows(d, docIndex{}) }
+
+// setDocRows installs doc, using ix when the caller already has the index. A
+// stale index is detected and rebuilt by the reflow guard in the renderer, so it
+// is only ever a shortcut.
+func (v *codeView) setDocRows(d *Document, ix docIndex) {
 	v.doc = d
 	v.topRow, v.xoffCell = 0, 0
 	v.caret, v.anchor = pos{}, pos{}
 	v.undo, v.redo = nil, nil
 	v.undoBytes = 0
-	v.rows = nil
-	v.rebuildRows()
+	if ix.rows != nil && ix.cells == v.wrapCells() {
+		v.rows, v.rowsCells = ix.rows, ix.cells
+	} else {
+		v.rows = nil
+		v.rebuildRows()
+	}
 	v.render()
 }
 
@@ -246,11 +263,23 @@ func (v *codeView) wrapScan(row int, sink func(cell int)) int {
 // cell each row starts at. It takes the wrap width so that indexing a whole
 // document measures the window once instead of per line.
 func (v *codeView) scanCells(line string, maxW int, sink func(cell int)) int {
+	if !v.wrap {
+		if sink != nil {
+			sink(0)
+		}
+		return 1
+	}
+	return scanCellsIndent(line, maxW, v.ed.indentWidth, sink)
+}
+
+// scanCellsIndent is the wrapping arithmetic behind scanCells, without the widget
+// around it, so a whole document can be indexed off the UI goroutine.
+func scanCellsIndent(line string, maxW, indentWidth int, sink func(cell int)) int {
 	if sink != nil {
 		sink(0)
 	}
-	if !v.wrap {
-		return 1
+	if indentWidth < 1 {
+		indentWidth = 1
 	}
 	if maxW < 1 {
 		maxW = 1
@@ -260,7 +289,7 @@ func (v *codeView) scanCells(line string, maxW int, sink func(cell int)) int {
 	for _, r := range line {
 		w := 1
 		if r == '\t' {
-			w = v.ed.indentWidth - cell%v.ed.indentWidth
+			w = indentWidth - cell%indentWidth
 		}
 		if cell+w > rowStart+maxW {
 			if lastSpace > rowStart {
@@ -376,17 +405,27 @@ func (v *codeView) caretRow() int { return v.rowStart(v.caret.row) + v.caretChun
 
 // rebuildRows recomputes the visual row index; only used while wrapping.
 func (v *codeView) rebuildRows() {
-	if !v.wrap || v.doc == nil {
-		v.rows = nil
-		return
+	v.rows = buildRowIndex(v.doc, v.wrapCells(), v.ed.indentWidth, v.wrap)
+	v.rowsCells = v.wrapCells()
+}
+
+// buildRowIndex is the visual-row index for doc at a wrap width of maxW cells, or
+// nil when wrapping is off. It touches no widget state, so a background open can
+// build the index while the file is still being read instead of blocking the UI
+// with it afterwards.
+func buildRowIndex(doc *Document, maxW, indentWidth int, wrap bool) []int {
+	if !wrap || doc == nil {
+		return nil
 	}
-	rows := make([]int, v.doc.LineCount()+1)
-	maxW := v.wrapCells()
+	if maxW < 1 {
+		maxW = 1
+	}
+	rows := make([]int, doc.LineCount()+1)
 	total, i := 0, 0
 	// The pages are walked directly: asking the document for each line by number
 	// would search the page and line indexes per line, which for a
 	// multi-million-line file costs more than the wrap arithmetic itself.
-	_ = v.doc.eachLine(func(line string, _ bool) error {
+	_ = doc.eachLine(func(line string, _ bool) error {
 		rows[i] = total
 		i++
 		// A line no longer than the window cannot wrap, and a line without tabs
@@ -395,12 +434,11 @@ func (v *codeView) rebuildRows() {
 			total++
 			return nil
 		}
-		total += v.scanCells(line, maxW, nil)
+		total += scanCellsIndent(line, maxW, indentWidth, nil)
 		return nil
 	})
 	rows[i] = total
-	v.rows = rows
-	v.rowsCells = v.wrapCells()
+	return rows
 }
 
 // patchRows updates the visual row index after the lines [r0, r0+oldLines) were

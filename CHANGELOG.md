@@ -11,6 +11,35 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.8.0] - 2026-11-09
+
+Opening a big file no longer freezes the window.
+
+### Added
+
+- **Background opening.** A file big enough for the read to be noticed (16 MiB
+  and up) is streamed on its own goroutine: the call returns in under a
+  millisecond, the status line reports progress ("opening big.txt — 43%"), and
+  the buffer you had stays readable and editable. A 256 MB file reads in ~1.2 s
+  with the UI free the whole time.
+- **Edits made while a file loads are protected.** The synchronous open made
+  that impossible; now, if the buffer changed while the file was being read,
+  Gaze asks before replacing it instead of silently dropping the typing.
+- **A second open supersedes the first.** Each open request is numbered, and a
+  read whose number is no longer current aborts at its next chunk, so a file
+  cannot install itself over a newer one. Quitting abandons in-flight reads too.
+
+### Changed
+
+- Small files are still read inline — it takes no time and avoids a frame of
+  nothing happening — so only the opens that used to freeze take the new path.
+- The visual-row index of a background-loaded document is built in the reader
+  goroutine (`buildRowIndex`) instead of on the UI goroutine, which is most of
+  what remained of the install pause: ~0.4 s for 256 MB instead of ~0.9 s.
+- The post-open step (the `file:line:col` caret jump, and session restore's
+  caret) now runs after the document is really installed, including when a
+  recovery snapshot is offered first — it used to run against the old buffer.
+
 ## [1.7.0] - 2026-11-04
 
 Files of a few hundred megabytes now open in seconds instead of being turned

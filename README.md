@@ -26,6 +26,10 @@ day-to-day features you actually reach for — no plugin system, no bloat.
   the same at any size: a 256 MB / 5.5M-line file opens in about 2 s using
   ~340 MB of memory, and a keystroke in it costs ~0.1 ms. Over 16 MiB Gaze
   asks first, and over 1 GiB it refuses
+- **Big files open in the background** — a file large enough to take a moment is
+  read on its own goroutine, so the window stays usable: the status line shows
+  "opening big.txt — 43%" and you can keep reading (or typing in) the buffer you
+  had. If you changed that buffer while it loaded, Gaze asks before replacing it
 - **Save guard** — a save warns when the file was changed on disk since it was
   opened, rather than overwriting it silently
 - **Session restore** — reopen the last file and caret position on a bare launch
@@ -164,8 +168,11 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
 - Large-file mode (over 16 MiB) keeps trailing whitespace: trimming on save
   would have to rewrite the whole document to mirror it back into the buffer.
 - Files over 1 GiB are refused rather than loaded.
-- Opening a very large file blocks the window while it streams in (about 2 s for
-  256 MB, 9 s for 1 GB); there is no progress bar yet.
+- Opening a very large file still stops the window for a moment while the parsed
+  document is installed (~0.4 s for 256 MB, ~1.2 s for 1 GB); the reading itself
+  happens in the background with a progress readout.
+- A second open while one is loading wins: the first read is abandoned rather
+  than finishing and installing itself.
 - BOM-less UTF-16 is detected and refused with an explanatory message rather
   than decoded, because guessing the byte order of an unmarked file is not safe.
 

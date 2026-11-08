@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -58,9 +59,13 @@ type Editor struct {
 	doc  *Document
 
 	editSeq    uint64
-	statsKnown bool   // whether the word/character counts are current
-	lastInfo   string // last text set on the readout, to skip no-op relayouts
-	lastTitle  string
+	statsKnown bool // whether the word/character counts are current
+
+	// loadSeq numbers open requests: a background read abandons itself as soon
+	// as a newer open (or a quit) bumps it.
+	loadSeq   atomic.Uint64
+	lastInfo  string // last text set on the readout, to skip no-op relayouts
+	lastTitle string
 
 	findBar    *fyne.Container
 	findEntry  *widget.Entry

@@ -172,12 +172,12 @@ func (e *Editor) setContent(text, path, enc string) {
 // approved for.
 func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 	text, eol := normalizeEOL(text)
-	e.setDocumentAs(NewDocument(text), path, eol, enc, mode)
+	e.setDocumentAs(NewDocument(text), path, eol, enc, mode, docIndex{})
 }
 
 // setDocumentAs installs an already-built document, which is how a file that was
 // streamed in (rather than read into a string) reaches the editor.
-func (e *Editor) setDocumentAs(doc *Document, path, eol, enc string, mode openMode) {
+func (e *Editor) setDocumentAs(doc *Document, path, eol, enc string, mode openMode, ix docIndex) {
 	e.eol = eol
 	e.enc = enc
 	if e.enc == "" {
@@ -200,7 +200,7 @@ func (e *Editor) setDocumentAs(doc *Document, path, eol, enc string, mode openMo
 	e.currentFile = path
 	e.dirty = false
 	e.applyWrap()
-	e.code.setDoc(e.doc)
+	e.code.setDocRows(e.doc, ix)
 	e.loading = false
 	e.refreshChrome()
 	freeMemory(doc.Len())
@@ -265,13 +265,7 @@ func (e *Editor) OpenFile() {
 			}
 
 			e.confirmOpenSize(name, size, func(mode openMode) {
-				defer r.Close()
-				doc, eol, enc, err := openDocument(&limitReader{r: r, limit: MaxOpenBytes})
-				if err != nil {
-					e.reportOpenError(err, name)
-					return
-				}
-				e.loadDocumentAs(path, doc, eol, enc, mode)
+				e.startOpenReader(path, name, r, size, mode, nil)
 			})
 		}, e.win)
 		d.Show()
@@ -298,35 +292,39 @@ func (e *Editor) OpenPathAt(path string, line, col int) {
 		e.setStatus("open failed")
 		return
 	}
+	after := func() {}
+	if line > 0 {
+		after = func() {
+			col0 := col
+			if col0 > 0 {
+				col0--
+			}
+			e.gotoLineCol(line, col0)
+		}
+	}
 	e.confirmOpenSize(filepath.Base(path), size, func(mode openMode) {
-		e.openPath(path, mode, line, col)
+		e.startOpen(path, mode, after)
 	})
 }
 
-// openPath reads and installs path. It runs once the size gate has approved the
-// open, and is the only place that reads a file into the buffer.
+// openPath reads path and installs it, placing the caret at the 1-based line and
+// column when line > 0. Both numbers are 1-based, matching file:line:col on the
+// command line, so column 0 and column 1 both mean the start of the line.
+//
+// It reads on the calling goroutine; the open commands use startOpen, which only
+// does that for a file small enough for it not to be noticed.
 func (e *Editor) openPath(path string, mode openMode, line, col int) {
-	f, err := os.Open(path)
-	if err != nil {
-		e.reportOpenError(err, filepath.Base(path))
-		return
+	after := func() {}
+	if line > 0 {
+		after = func() {
+			col0 := col
+			if col0 > 0 {
+				col0--
+			}
+			e.gotoLineCol(line, col0)
+		}
 	}
-	defer f.Close()
-
-	doc, eol, enc, err := openDocument(&limitReader{r: f, limit: MaxOpenBytes})
-	if err != nil {
-		e.reportOpenError(err, filepath.Base(path))
-		return
-	}
-	e.loadDocumentAs(path, doc, eol, enc, mode)
-
-	if line <= 0 {
-		return
-	}
-	if col > 0 {
-		col--
-	}
-	e.gotoLineCol(line, col)
+	e.startOpen(path, mode, after)
 }
 
 // loadContent installs file text, offering a crash-recovery snapshot first when
@@ -338,12 +336,14 @@ func (e *Editor) loadContent(path, text, enc string) {
 // loadContentAs is loadContent with the open mode the file was approved for.
 func (e *Editor) loadContentAs(path, text, enc string, mode openMode) {
 	text, eol := normalizeEOL(text)
-	e.loadDocumentAs(path, NewDocument(text), eol, enc, mode)
+	e.loadDocumentAs(path, NewDocument(text), eol, enc, mode, docIndex{}, nil)
 }
 
 // loadDocumentAs is loadContentAs for a document that was streamed in, so a big
-// file does not have to pass through a string to be installed.
-func (e *Editor) loadDocumentAs(path string, doc *Document, eol, enc string, mode openMode) {
+// file does not have to pass through a string to be installed. after, when set,
+// runs once the buffer really holds the document — including the case where a
+// recovery snapshot was offered first.
+func (e *Editor) loadDocumentAs(path string, doc *Document, eol, enc string, mode openMode, ix docIndex, after func()) {
 	e.recordDiskState(path)
 	suffix := ""
 	if mode.large() {
@@ -361,17 +361,26 @@ func (e *Editor) loadDocumentAs(path string, doc *Document, eol, enc string, mod
 					e.setStatus("recovered " + path + suffix)
 				} else {
 					clearRecovery(path)
-					e.setDocumentAs(doc, path, eol, enc, mode)
+					e.setDocumentAs(doc, path, eol, enc, mode, ix)
 					e.setStatus("opened " + path + suffix)
 				}
 				e.addRecent(path)
+				runAfter(after)
 			}, e.win)
 		return
 	}
 	clearRecovery(path)
-	e.setDocumentAs(doc, path, eol, enc, mode)
+	e.setDocumentAs(doc, path, eol, enc, mode, ix)
 	e.addRecent(path)
 	e.setStatus("opened " + path + suffix)
+	runAfter(after)
+}
+
+// runAfter runs a post-open step, if the caller asked for one.
+func runAfter(after func()) {
+	if after != nil {
+		after()
+	}
 }
 
 // SaveFile writes back to the current path, or falls back to Save As. The write
@@ -803,13 +812,11 @@ func (e *Editor) RestoreSession() bool {
 	row := e.app.Preferences().IntWithFallback(prefLastRow, 0)
 	col := e.app.Preferences().IntWithFallback(prefLastCol, 0)
 	e.confirmOpenSize(filepath.Base(path), size, func(mode openMode) {
-		e.openPath(path, mode, 0, 0)
-		if e.currentFile != path {
-			return
-		}
+		after := func() {}
 		if row > 0 || col > 0 {
-			e.gotoLineCol(row+1, col)
+			after = func() { e.gotoLineCol(row+1, col) }
 		}
+		e.startOpen(path, mode, after)
 	})
 	return true
 }
@@ -830,6 +837,9 @@ func (e *Editor) onDropped(_ fyne.Position, uris []fyne.URI) {
 // first if there are unsaved changes.
 func (e *Editor) Quit() {
 	e.confirmDiscard(func() {
+		// A background open may still be reading: abandon it rather than let it
+		// install a document into a window that is going away.
+		e.loadSeq.Add(1)
 		e.saveSession(e.currentFile)
 		e.saveGeometry()
 		e.stopTimers()
