@@ -11,6 +11,47 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.9.0] - 2026-11-09
+
+Big files are no longer copied into memory, and a load shows its progress.
+
+### Added
+
+- **Memory-mapped opening.** From 8 MiB up, a file with plain LF line endings is
+  mapped read-only instead of read: the document's pages become string views of
+  the mapping, so the text costs address space and page cache instead of heap,
+  and untouched pages are never touched at all. A 1 GB / 21.9M-line file opens in
+  ~2.4 s using ~260 MB (against 9.5 s and 1.3 GB before), and that is mostly the
+  line index. A 2 GB file opens in ~3.9 s using ~370 MB. Typing stays at the
+  same ~0.4 ms: an edit copies only the 64 KB page it lands in.
+- **A progress bar in the status row**, at the bottom left, filling as a large
+  file loads. It appears only for a background (large-file) open, keeps its own
+  label empty because the status text beside it carries the percentage, and takes
+  no room in the layout when nothing is loading.
+- `MaxOpenBytes` is now 2 GiB, because the limit is the line index rather than
+  the file: 4 bytes a line, and 8 more if wrapping is on.
+- Word wrap is not offered above 8M lines (`wrapIndexMaxLines`), where the
+  visual-row index would cost more than the wrapping is worth. The View menu
+  shows the effective state, and toggling it there says why.
+
+### Changed
+
+- A CRLF, BOM, UTF-16 or binary file still goes to the streaming reader, which
+  normalises and names it as it copies; the mapping is only used when the bytes
+  can be used exactly as they are.
+- The line index is filled as line starts go by (`lineIndexBuilder`) instead of
+  being collected in an `[]int` first. The old shape needed 8 bytes a line on top
+  of the 4 the index keeps, which for a 2 GB file was half a gigabyte of
+  temporary allocation.
+- Open and close documentation says what a file now costs: mapping, line index,
+  and where the size limit comes from.
+
+### Fixed
+
+- `Document.ReplaceRange` clamps a start offset past the end of the document
+  instead of slicing out of bounds. Reachable when edits are applied to offsets
+  measured before earlier edits moved the text.
+
 ## [1.8.0] - 2026-11-09
 
 Opening a big file no longer freezes the window.

@@ -22,14 +22,23 @@ day-to-day features you actually reach for — no plugin system, no bloat.
 - **One editing surface for every file size** — the text lives in a 64 KB page
   store with a block-indexed line table, and Gaze draws the lines on screen
   itself, so cost tracks the screen rather than the file. Wrap, selection,
+  - **One editing surface for every file size** — the text lives in a 64 KB page
+  store with a block-indexed line table, and Gaze draws the lines on screen
+  itself, so cost tracks the screen rather than the file. Wrap, selection,
   undo, find/replace across the whole file, crash recovery and saving behave
   the same at any size: a 256 MB / 5.5M-line file opens in about 2 s using
   ~340 MB of memory, and a keystroke in it costs ~0.1 ms. Over 16 MiB Gaze
-  asks first, and over 1 GiB it refuses
+  asks first, and over 2 GiB it refuses
+- **Big files are memory-mapped** — from 8 MiB up, a file with plain LF endings
+  is mapped instead of copied, so its bytes stay in the page cache and cost
+  almost no heap: a 1 GB / 21.9M-line file opens in ~2.4 s using ~260 MB (mostly
+  the line index), and a 2 GB one in ~3.9 s using ~370 MB. Typing in it costs the
+  same ~0.4 ms as anywhere else, and untouched pages are never read at all
 - **Big files open in the background** — a file large enough to take a moment is
-  read on its own goroutine, so the window stays usable: the status line shows
-  "opening big.txt — 43%" and you can keep reading (or typing in) the buffer you
-  had. If you changed that buffer while it loaded, Gaze asks before replacing it
+  read on its own goroutine, so the window stays usable: a thin progress bar
+  fills at the bottom left while the status line names the file, and you can
+  keep reading (or typing in) the buffer you had. If you changed that buffer
+  while it loaded, Gaze asks before replacing it
 - **Save guard** — a save warns when the file was changed on disk since it was
   opened, rather than overwriting it silently
 - **Session restore** — reopen the last file and caret position on a bare launch
@@ -140,9 +149,16 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
 - Only ~35 `canvas.Text` objects exist no matter how big the file is: scrolling
   moves them, so cost tracks the screen, not the document. Re-drawing a page
   costs ~0.3 ms.
-- Opening streams the file into pages: it is never held as one string first, so
-  a 256 MB file costs ~340 MB of heap and a 1 GB file ~1.3 GB, at roughly
-  200 MB/s. Saves stream the document's pages straight to disk.
+- A file of 8 MiB or more with plain LF line endings is memory-mapped, and the
+  pages of the document are string views of the mapping (`unsafe.String`, no
+  copy), so the text costs address space rather than heap and the kernel decides
+  which parts stay resident. Anything else — CRLF, a BOM, UTF-16, a binary blob —
+  is streamed into pages instead, because it needs normalising or naming as it
+  is read. A 256 MB LF file is the same document either way.
+- A mapping is never released: undo history, snapshots and in-flight saves hold
+  substrings of it, and there is no way to know when the last one goes. On a
+  64-bit machine the address space is free; the pages are the page cache's.
+- Saves stream the document's pages straight to disk.
 - Line starts are stored in blocks of 4096, so typing shifts one base per block
   instead of one offset per line: ~0.1 ms per keystroke in a 5.5M-line file.
   A line break still rebuilds that index, which costs ~35 ms there.
@@ -167,7 +183,13 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
   no block indent over a multi-line selection yet.
 - Large-file mode (over 16 MiB) keeps trailing whitespace: trimming on save
   would have to rewrite the whole document to mirror it back into the buffer.
-- Files over 1 GiB are refused rather than loaded.
+- Files over 2 GiB are refused rather than loaded. The limit is the line index
+  (4 bytes a line, plus 8 more when wrapping), not the text: a 2 GiB file with
+  44M lines needs ~370 MB for it.
+- Word wrap is not offered above 8M lines, where the visual-row index would cost
+  more than reflowing a file that size is worth; the menu reports it as off.
+- A memory-mapped file is read through the kernel, so if another program
+  truncates it while Gaze has it open, reading past the new end can fault.
 - Opening a very large file still stops the window for a moment while the parsed
   document is installed (~0.4 s for 256 MB, ~1.2 s for 1 GB); the reading itself
   happens in the background with a progress readout.
