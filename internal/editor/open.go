@@ -10,13 +10,15 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 )
 
 // Opening a big file means reading hundreds of megabytes and indexing every
 // line. Doing that on the UI goroutine freezes the window for seconds, so a
 // large file is read on its own goroutine while the old buffer stays usable, and
-// the status line reports how far along the read is. Small files are still read
+// the status line (with the progress bar beside it) reports how far along the read
+// is. Small files are still read
 // inline: it takes a moment and avoids a frame of nothing happening.
 
 // openProgressInterval throttles the progress updates, so the status line is not
@@ -93,16 +95,69 @@ func (e *Editor) readInline(seq uint64, path, name string, body io.Reader, size 
 		e.reportOpenError(err, name)
 		return
 	}
+	e.hideLoadBar()
 	e.installWhenIdle(seq, e.editSeq, path, doc, eol, enc, mode, docIndex{}, after)
 }
 
 // readInBackground streams a large file on its own goroutine and installs it when
 // the read is done, unless a newer open has taken over in the meantime.
+// loadBarWidth is how much room the progress bar takes in the status row.
+const loadBarWidth = 130
+
+// showLoadBar puts the progress bar in the status row, left of the status text.
+func (e *Editor) showLoadBar() {
+	if e.loadBar == nil || e.statusBox == nil {
+		return
+	}
+	e.loadBar.SetValue(0)
+	bar := container.NewCenter(container.NewGridWrap(fyne.NewSize(loadBarWidth, 10), e.loadBar))
+	row := container.NewBorder(nil, nil, bar, nil, e.status)
+	e.statusBox.Objects = []fyne.CanvasObject{row}
+	e.statusBox.Refresh()
+}
+
+// setLoadBar moves the progress bar, given how much has been read.
+func (e *Editor) setLoadBar(read, total int64) {
+	if e.loadBar == nil {
+		return
+	}
+	switch {
+	case total <= 0:
+		e.loadBar.SetValue(0)
+	case read < 0:
+		e.loadBar.SetValue(0)
+	case read >= total:
+		e.loadBar.SetValue(1)
+	default:
+		e.loadBar.SetValue(float64(read) / float64(total))
+	}
+}
+
+// hideLoadBar takes the progress bar back out of the status row.
+func (e *Editor) hideLoadBar() {
+	if e.loadBar == nil || e.statusBox == nil {
+		return
+	}
+	if len(e.statusBox.Objects) == 1 && e.statusBox.Objects[0] == e.status {
+		return
+	}
+	e.statusBox.Objects = []fyne.CanvasObject{e.status}
+	e.statusBox.Refresh()
+}
+
+// loadBarShown reports whether the progress bar is in the status row, for tests.
+func (e *Editor) loadBarShown() bool {
+	return e.statusBox != nil && len(e.statusBox.Objects) == 1 && e.statusBox.Objects[0] != e.status
+}
+
 func (e *Editor) readInBackground(seq uint64, path, name string, body io.ReadCloser, size int64, mode openMode, after func()) {
 	editsAtRequest := e.editSeq
 	// The wrap width is widget state, so it is read here, on the UI goroutine.
 	cells, wrap := e.code.wrapCells(), e.wrap
 	e.setStatus("opening " + name + "…")
+	if size > 0 {
+		e.showLoadBar()
+	}
 
 	go func() {
 		defer body.Close()
@@ -120,6 +175,7 @@ func (e *Editor) readInBackground(seq uint64, path, name string, body io.ReadClo
 						return
 					}
 					e.setStatus("opening " + name + " — " + openProgressText(read, total))
+					e.setLoadBar(read, total)
 				})
 			},
 		}
@@ -133,6 +189,7 @@ func (e *Editor) readInBackground(seq uint64, path, name string, body io.ReadClo
 		}
 		fyne.Do(func() {
 			finished.Store(true)
+			e.hideLoadBar()
 			if e.loadSeq.Load() != seq {
 				return // superseded by another open, or the editor is closing
 			}

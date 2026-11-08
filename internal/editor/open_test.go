@@ -76,6 +76,40 @@ func fastProgress(t *testing.T) {
 	t.Cleanup(func() { openProgressInterval = old })
 }
 
+// The progress bar appears in the status row while a big file loads, moves with
+// the read, and goes away when the document is installed.
+func TestOpenShowsProgressBar(t *testing.T) {
+	e := newTestEditor(t)
+	fastProgress(t)
+	if e.loadBarShown() {
+		t.Fatal("the progress bar is in the status row before any open")
+	}
+	text := strings.Repeat("a line of the new file\n", 512)
+	src := paced(text, 256, 2*time.Millisecond)
+	path := filepath.Join(t.TempDir(), "big.txt")
+	e.startOpenReader(path, "big.txt", src, int64(len(src.data)), openLarge, nil)
+
+	waitFor(t, "the progress bar", e.loadBarShown)
+	waitFor(t, "the bar to move", func() bool { return e.loadBar.Value > 0 })
+	if v := e.loadBar.Value; v < 0 || v > 1 {
+		t.Fatalf("bar value = %v, want a fraction of 1", v)
+	}
+	waitFor(t, "the open to finish", func() bool { return e.currentFile == path })
+	waitFor(t, "the bar to go away", func() bool { return !e.loadBarShown() })
+}
+
+// A small file is read inline, so the bar never appears.
+func TestOpenSmallFileLeavesProgressBarHidden(t *testing.T) {
+	e := newTestEditor(t)
+	e.startOpenReader("", "small.txt", paced("one\ntwo\n", 8, 0), 8, openNormal, nil)
+	if e.loadBarShown() {
+		t.Fatal("the progress bar showed for a small file")
+	}
+	if v := e.loadBar.Value; v != 0 {
+		t.Fatalf("bar value = %v, want 0", v)
+	}
+}
+
 // A large open returns to the UI immediately: the old buffer is still there and
 // the status line says what is happening, then the document appears.
 func TestOpenLargeFileInBackground(t *testing.T) {

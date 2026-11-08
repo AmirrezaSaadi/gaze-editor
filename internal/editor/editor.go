@@ -53,6 +53,12 @@ type Editor struct {
 	status *widget.Label
 	info   *widget.Label
 
+	// loadBar shows how far a background open has read. It sits in statusBox,
+	// which holds either just the status line or the bar plus the status line, so
+	// nothing has to be laid out for the bar until a file is actually loading.
+	loadBar   *widget.ProgressBar
+	statusBox *fyne.Container
+
 	// Every file is held in doc and edited through code, which draws the lines
 	// on screen itself, so the buffer never reaches a widget.Entry.
 	code *codeView
@@ -226,6 +232,12 @@ func (e *Editor) buildWidgets() {
 	e.info = widget.NewLabel("")
 	e.info.Alignment = fyne.TextAlignTrailing
 	e.info.TextStyle = fyne.TextStyle{Monospace: true}
+
+	e.loadBar = widget.NewProgressBar()
+	e.loadBar.Min, e.loadBar.Max = 0, 1
+	// The status line next to it already says the percentage, so the bar keeps
+	// its own label empty and stays a thin strip.
+	e.loadBar.TextFormatter = func() string { return "" }
 }
 
 func (e *Editor) buildFindBar() {
@@ -266,7 +278,8 @@ func (e *Editor) buildLayout() {
 	toolbar := container.NewHBox(newBtn, openBtn, saveBtn, findBtn, layout.NewSpacer(), themeBtn)
 
 	top := container.NewVBox(toolbar, e.findBar)
-	bottom := container.NewBorder(nil, nil, container.NewPadded(e.status), container.NewPadded(e.info))
+	e.statusBox = container.NewStack(e.status)
+	bottom := container.NewBorder(nil, nil, container.NewPadded(e.statusBox), container.NewPadded(e.info))
 	main := container.NewBorder(top, bottom, nil, nil, e.code)
 	e.win.SetContent(container.NewStack(main, e.tipLayer))
 	if c := e.win.Canvas(); c != nil {
