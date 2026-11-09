@@ -90,6 +90,7 @@ type codeView struct {
 	focused  bool
 	dragging bool
 	dragBar  bool
+	hoverBar bool // the pointer is over the scrollbar gutter
 
 	undo      []docEdit
 	redo      []docEdit
@@ -1315,13 +1316,38 @@ func (v *codeView) FocusLost() {
 	v.render()
 }
 
-// Cursor is the text cursor over the editing surface.
-func (v *codeView) Cursor() desktop.Cursor { return desktop.TextCursor }
+// Cursor is the text caret over the text and an arrow over the scrollbar: the
+// bar is drawn by this widget, so without this the pointer would keep showing the
+// editing cursor while dragging it.
+func (v *codeView) Cursor() desktop.Cursor {
+	if v.hoverBar {
+		return desktop.DefaultCursor
+	}
+	return desktop.TextCursor
+}
+
+// MouseIn and MouseMoved keep track of whether the pointer is over the gutter.
+func (v *codeView) MouseIn(ev *desktop.MouseEvent)    { v.setHover(ev.Position) }
+func (v *codeView) MouseMoved(ev *desktop.MouseEvent) { v.setHover(ev.Position) }
+
+// MouseOut leaves the text cursor showing again.
+func (v *codeView) MouseOut() { v.hoverBar = false }
+
+// setHover updates the scrollbar hover state from a pointer position.
+func (v *codeView) setHover(p fyne.Position) {
+	v.hoverBar = v.overBar(p.X)
+}
 
 // inGutter reports whether x is past the text, in the scrollbar gutter. Clicks
 // there never move the caret, whether or not a bar is drawn.
 func (v *codeView) inGutter(x float32) bool {
 	return x >= v.Size().Width-v.barWidth()
+}
+
+// overBar reports whether x is over a bar that is actually drawn: a document that
+// fits has no bar, so its gutter keeps the text cursor.
+func (v *codeView) overBar(x float32) bool {
+	return !v.thumb.Hidden && v.inGutter(x)
 }
 
 // TypedRune inserts a character at the caret.
