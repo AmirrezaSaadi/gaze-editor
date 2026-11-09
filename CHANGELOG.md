@@ -11,6 +11,56 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.10.0] - 2026-11-09
+
+Syntax highlighting, from definitions that are data.
+
+### Added
+
+- **Highlighting for 15 languages**: Go, Rust, C, C++, Python, JavaScript,
+  TypeScript, shell, JSON, TOML, YAML, Markdown, INI/conf, Dockerfile and
+  Makefile. The language is matched by extension and then by whole file name, and
+  named in the status readout.
+- **View → Syntax Highlighting** (persisted), **View → Language** to override the
+  choice for the open file, and **View → Languages…** to manage definitions.
+- **Downloadable definitions.** The `langs/` directory is both embedded in the
+  binary and served from GitHub, so *Languages… → Check for Downloads* can install
+  a definition that the shipped build predates — no new release needed — and
+  *Install from File…* installs one with no network at all. Downloads are checked
+  against the checksum in `langs/index.json`, written atomically to
+  `~/.config/gaze/languages/`, and an installed definition replaces a built-in
+  one with the same id.
+- Definitions are **JSON only**: keywords, types, builtins, line and block
+  comments, string rules (with escapes and may-span-lines), numbers, and anchored
+  regexes for line prefixes. Nothing in one can run, its patterns go through Go's
+  linear-time `regexp`, its file name must be a plain name, and its body is capped
+  at 256 KB — a definition is a colour, at worst.
+
+### Changed
+
+- The renderer draws a row as **runs of cells** instead of one string: a run is a
+  cell offset, a colour and its text, still capped at 8 runs per row and still
+  pooled, so scrolling allocates nothing. Tab expansion moved into that pass, so
+  `lineDisplay` is gone.
+- The editor's status line is now the middle of the bottom bar rather than its
+  left edge, so a long message truncates with an ellipsis instead of running into
+  the readout on the right; "opened …" names the file by its base name when the
+  path is long.
+- Highlighting state is an `int32` per line, filled forwards from the last known
+  state and dropped from the edited line down, so typing in a 100,000-line file
+  re-lexes the lines below the caret, not the file.
+
+### Performance
+
+- Lexing the visible window (35 lines, 9 runs a line) costs ~20 µs; text objects
+  go from ~35 to ~250 for a crowded screenful, and a full repaint from ~0.4 ms to
+  ~0.9 ms. Typing is unchanged (~0.5 ms).
+- The binary is ~130 KB larger (the embedded definitions plus the lexer). No new
+  module dependency: `net/http` was already linked in by Fyne.
+- A language with block comments is only highlighted up to 100,000 lines;
+  definitions without multi-line constructs work at any size, because a line is
+  then self-contained.
+
 ## [1.9.0] - 2026-11-09
 
 Big files are no longer copied into memory, and a load shows its progress.

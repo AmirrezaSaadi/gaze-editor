@@ -19,6 +19,11 @@ day-to-day features you actually reach for — no plugin system, no bloat.
   preserving permissions (and symlinks) so a crash cannot truncate your file
 - **Autosave recovery** — dirty buffers are snapshotted to the cache dir and
   offered back after a crash, untitled buffers included
+- **Syntax highlighting** for 15 languages out of the box — Go, Rust, C/C++,
+  Python, JavaScript, TypeScript, shell, JSON, TOML, YAML, Markdown, INI,
+  Dockerfile, Makefile — from data-only definitions: keywords, strings,
+  comments, numbers and a few line patterns. More can be installed from inside
+  the editor (*View → Languages…*), and a definition is just a JSON file
 - **One editing surface for every file size** — the text lives in a 64 KB page
   store with a block-indexed line table, and Gaze draws the lines on screen
   itself, so cost tracks the screen rather than the file. Wrap, selection,
@@ -143,6 +148,72 @@ animations, saving a little more code and CPU. This keeps the binary around
 **20 MB** instead of the ~33 MB a default `go build` produces; what remains is
 the Go runtime plus Fyne's GL driver and bundled text fonts.
 
+## Syntax highlighting
+
+Write the file, and Gaze colours it: the language is matched by extension, then
+by whole file name (`Dockerfile`, `Makefile`), and the name is shown in the
+status readout so you can see what it picked. *View → Syntax Highlighting*
+turns it off, *View → Language* overrides the choice for the file in front of
+you, and *View → Languages…* lists what is installed and what can be fetched.
+
+The colours are the token colours of GitHub's own themes, chosen once per theme
+variant, so they read on both the light and the dark background.
+
+**Language definitions are data, not code.** A language is a JSON file:
+
+```json
+{
+  "schema": 1,
+  "id": "go",
+  "name": "Go",
+  "extensions": ["go"],
+  "filenames": [],
+  "line_comment": ["//"],
+  "block_comment": [{"start": "/*", "end": "*/"}],
+  "strings": [{"start": "\"", "end": "\"", "escape": "\\"},
+              {"start": "`", "end": "`", "multiline": true}],
+  "keywords": ["func", "return", "if", "for"],
+  "types": ["int", "string"],
+  "builtins": ["len", "append"],
+  "numbers": true,
+  "line_rules": [{"pattern": "^#", "class": "keyword"}]
+}
+```
+
+`class` is one of `keyword`, `type`, `builtin`, `string`, `number`, `comment`.
+A `line_rules` pattern colours the prefix it matches, which is how Markdown
+headings, YAML keys, Makefile targets and C preprocessor lines are handled.
+Patterns go through Go's `regexp`, which is linear-time, so a definition cannot
+make the editor hang.
+
+The 15 definitions Gaze ships with are embedded in the binary from `langs/`, and
+that same directory is served from GitHub, so a definition can be corrected
+without a new release:
+
+- **Languages… → Check for Downloads** lists what the repository has that you do
+  not, with checksums in `langs/index.json`; **Install** writes it to
+  `~/.config/gaze/languages/`.
+- **Install from File…** takes a definition you wrote yourself, no network at all.
+- An installed definition with the same `id` as a built-in one replaces it; the
+  Remove button appears only for the ones you added.
+
+Nothing is downloaded until you ask, the base URL is compiled in, a definition's
+file name must be a plain name (no paths), the body is capped at 256 KB, and the
+checksum from the index is verified before it is written. Nothing in a
+definition is ever executed.
+
+**Cost.** Highlighting is a pure function of a line and the state it starts in, so
+the CPU cost is the lines on screen: lexing 35 lines is about 20 µs. The visible
+cost is object count — a coloured line is drawn as up to 8 runs of text instead
+of one, so a full repaint of the window goes from ~0.4 ms to ~0.9 ms, and typing
+stays where it was (~0.5 ms). Object memory is ~84 KB for a screenful.
+
+Highlighting is exact for a document up to 100,000 lines. Above that, a language
+that has no multi-line constructs (JSON, INI, logs) is still exact, because a line
+is then self-contained; one that does (C, Go, Python) is left plain rather than
+guessed, since knowing the state at line 4,000,000 would mean lexing four million
+lines first.
+
 ## Size & memory notes
 
 - No duplicate buffer: dirty state is a flag, not a second copy of the file.
@@ -167,6 +238,10 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
 - `runtime/debug.FreeOSMemory` runs after open/save so the resident set does
   not creep up as files are cycled.
 - `debug.SetGCPercent(50)` keeps the idle heap small.
+- Highlighting adds up to 8 text objects per visible line (a screenful is ~250
+  instead of ~35) and about 130 KB to the binary, which is the embedded
+  definitions and the lexer. No new dependencies: `net/http`, needed to fetch a
+  definition, was already linked in by Fyne.
 - The UI is deliberately slim: a five-button toolbar, a two-row find bar and a
   compact status line — no extra chrome, no placeholder text.
 
@@ -177,6 +252,12 @@ the Go runtime plus Fyne's GL driver and bundled text fonts.
   it attaches to `widget.Entry`; typed runes are inserted directly.
 - Tabs are expanded to the editor's indent width for display, so a file that
   mixes tabs and spaces lines up by column, not by tab stop.
+- Markdown is approximated: headings, lists, quotes, rules and fences get a
+  colour, but inline emphasis (`**bold**`, `*italic*`) and link targets are not
+  styled, and nothing is reflowed.
+- A language with block comments is not highlighted past 100,000 lines (see
+  above); the language name is then left out of the readout rather than shown
+  over plain text.
 - **Find/replace materialises the document once per command**, because `^`, `$`
   and `$1` need the whole text. It is released as soon as the command finishes.
 - The line commands (indent, move, duplicate) act on the caret's line; there is
