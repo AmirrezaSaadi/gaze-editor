@@ -114,6 +114,7 @@ func (e *Editor) confirmOpenSize(name string, size int64, proceed func(openMode)
 			fmt.Sprintf("%s is %s.\n\nGaze opens a file this big by memory-mapping it, so the text itself is never copied into memory, and it draws only the lines on screen. What it does keep is a line index, which costs memory in proportion to the number of lines. Reading it happens in the background, so the window stays usable while it loads. Continue?",
 				name, humanBytes(size)),
 			func(ok bool) {
+				defer e.focusCode()
 				if !ok {
 					e.setStatus("open cancelled — " + name)
 					return
@@ -207,6 +208,8 @@ func (e *Editor) setDocumentAs(doc *Document, path, eol, enc string, mode openMo
 	// different one (or none at all).
 	e.lang = e.detectLanguage()
 	e.applySyntax()
+	// A document was just installed, so this is what the user is editing.
+	e.focusCode()
 	e.loading = false
 	e.refreshChrome()
 	freeMemory(doc.Len())
@@ -222,6 +225,7 @@ func (e *Editor) confirmDiscard(proceed func()) {
 	dialog.ShowConfirm("Unsaved changes",
 		"The current file has unsaved changes.\nDiscard them and continue?",
 		func(ok bool) {
+			defer e.focusCode()
 			if !ok {
 				return
 			}
@@ -249,6 +253,7 @@ func (e *Editor) NewFile() {
 func (e *Editor) OpenFile() {
 	e.confirmDiscard(func() {
 		d := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
+			defer e.focusCode()
 			if err != nil {
 				dialog.ShowError(err, e.win)
 				return
@@ -360,6 +365,7 @@ func (e *Editor) loadDocumentAs(path string, doc *Document, eol, enc string, mod
 		dialog.ShowConfirm("Recover unsaved changes?",
 			"Gaze found unsaved changes for "+name+" from an earlier session.\nRestore them?",
 			func(restore bool) {
+				defer e.focusCode()
 				if restore {
 					e.setContentAs(rec, path, enc, mode)
 					e.dirty = true
@@ -690,6 +696,7 @@ func writeFileAtomicWith(path string, fill func(io.Writer) error) error {
 // SaveAsFile shows the native save dialog and re-targets the buffer.
 func (e *Editor) SaveAsFile() {
 	d := dialog.NewFileSave(func(wc fyne.URIWriteCloser, err error) {
+		defer e.focusCode()
 		if err != nil {
 			dialog.ShowError(err, e.win)
 			return

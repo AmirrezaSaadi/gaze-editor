@@ -90,6 +90,7 @@ type Editor struct {
 	trimItem     *fyne.MenuItem
 	autosaveItem *fyne.MenuItem
 	syntaxItem   *fyne.MenuItem
+	langsDialog  *dialog.CustomDialog // open languages dialog, if any
 	langItem     *fyne.MenuItem
 	langMenu     *fyne.Menu
 	langs        []*grammar // installed definitions, cached until one changes
@@ -168,6 +169,34 @@ func (e *Editor) text() string {
 
 // focusTarget is the widget that takes keyboard focus.
 func (e *Editor) focusTarget() fyne.Focusable { return e.code }
+
+// takeFocus puts keyboard focus on the editing surface, whatever had it before.
+func (e *Editor) takeFocus() {
+	if e.win == nil || e.code == nil {
+		return
+	}
+	if c := e.win.Canvas(); c != nil {
+		c.Focus(e.code)
+	}
+}
+
+// focusCode gives the editing surface its focus back, unless something that is
+// meant to have it (the find bar, a dialog) holds it. Dialogs take canvas focus
+// and do not hand it back when they close, which used to leave the editor unable
+// to receive a single keystroke.
+func (e *Editor) focusCode() {
+	if e.win == nil || e.code == nil {
+		return
+	}
+	c := e.win.Canvas()
+	if c == nil {
+		return
+	}
+	if f := c.Focused(); f != nil && f != e.code {
+		return
+	}
+	c.Focus(e.code)
+}
 
 // caretLineCol is the 1-based document position of the caret.
 func (e *Editor) caretLineCol() (line, col int) {
@@ -298,6 +327,25 @@ func (e *Editor) buildLayout() {
 		c.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyEscape}, func(fyne.Shortcut) { e.escape() })
 		c.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyUp, Modifier: fyne.KeyModifierAlt}, func(fyne.Shortcut) { e.historyPrev() })
 		c.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyDown, Modifier: fyne.KeyModifierAlt}, func(fyne.Shortcut) { e.historyNext() })
+		// Fyne only calls these when nothing on the canvas has focus, which is
+		// exactly the state a closed dialog leaves behind. Typing must never
+		// depend on that: take the focus back and deliver the key.
+		// A dialog owns the keyboard while it is up, even when nothing in it has
+		// taken focus yet, so the fallback stays out of the way then.
+		c.SetOnTypedRune(func(r rune) {
+			if len(c.Overlays().List()) > 0 {
+				return
+			}
+			e.takeFocus()
+			e.code.TypedRune(r)
+		})
+		c.SetOnTypedKey(func(ev *fyne.KeyEvent) {
+			if len(c.Overlays().List()) > 0 {
+				return
+			}
+			e.takeFocus()
+			e.code.TypedKey(ev)
+		})
 	}
 }
 
@@ -790,7 +838,7 @@ func (e *Editor) syncTheme() {
 }
 
 func (e *Editor) showAbout() {
-	dialog.ShowInformation("About Gaze",
+	d := dialog.NewInformation("About Gaze",
 		"Gaze — a tiny, fast Fyne text editor.\n\n"+
 			"Find & replace (regex, history), go-to-line, line ops,\n"+
 			"word wrap, font zoom, recent files, autosave recovery.\n"+
@@ -799,6 +847,8 @@ func (e *Editor) showAbout() {
 			"usage: gaze [file[:line[:col]]]  ·  gaze -  reads stdin\n\n"+
 			"File · Edit · View · built with Fyne v2.",
 		e.win)
+	d.SetOnClosed(e.focusCode)
+	d.Show()
 }
 
 // CurrentFile returns the backing path ("" == untitled).

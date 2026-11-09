@@ -117,6 +117,11 @@ func (e *Editor) ShowLanguages() {
 	body.Resize(fyne.NewSize(560, 420))
 
 	d := dialog.NewCustom("Languages", "Close", body, e.win)
+	e.langsDialog = d
+	d.SetOnClosed(func() {
+		e.langsDialog = nil
+		e.focusCode()
+	})
 	d.Resize(fyne.NewSize(560, 460))
 	d.Show()
 	fetch()

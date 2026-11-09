@@ -1301,6 +1301,9 @@ func (v *codeView) AcceptsTab() bool { return true }
 // FocusGained starts drawing the caret.
 func (v *codeView) FocusGained() {
 	v.focused = true
+	// A key released while another window had focus never reaches us, which would
+	// leave a modifier stuck down and make typing do nothing.
+	v.shift, v.ctrl, v.alt = false, false, false
 	v.render()
 }
 
@@ -1314,6 +1317,12 @@ func (v *codeView) FocusLost() {
 
 // Cursor is the text cursor over the editing surface.
 func (v *codeView) Cursor() desktop.Cursor { return desktop.TextCursor }
+
+// inGutter reports whether x is past the text, in the scrollbar gutter. Clicks
+// there never move the caret, whether or not a bar is drawn.
+func (v *codeView) inGutter(x float32) bool {
+	return x >= v.Size().Width-v.barWidth()
+}
 
 // TypedRune inserts a character at the caret.
 func (v *codeView) TypedRune(r rune) {
@@ -1457,9 +1466,12 @@ func (v *codeView) paste() {
 
 // Tapped places the caret where the pointer is.
 func (v *codeView) Tapped(ev *fyne.PointEvent) {
-	if v.doc == nil || ev.Position.X >= v.Size().Width-v.barWidth() {
+	if v.doc == nil || v.inGutter(ev.Position.X) {
 		return
 	}
+	// Clicking the text is the way back to a widget that lost keyboard focus, for
+	// instance because a dialog closed without giving it back.
+	v.ed.takeFocus()
 	v.dragging = false
 	v.setCaret(v.posAtPoint(ev.Position))
 }
@@ -1496,11 +1508,12 @@ func (v *codeView) DoubleTapped(ev *fyne.PointEvent) {
 // MouseDown decides whether this drag is a selection or a scrollbar drag.
 func (v *codeView) MouseDown(ev *desktop.MouseEvent) {
 	v.dragging = true
-	v.dragBar = ev.Position.X >= v.Size().Width-v.barWidth()
+	v.dragBar = v.inGutter(ev.Position.X)
 	if v.dragBar {
 		v.dragToBar(ev.Position.Y)
 		return
 	}
+	v.ed.takeFocus()
 	v.setCaret(v.posAtPoint(ev.Position))
 }
 
