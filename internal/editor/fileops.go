@@ -203,6 +203,10 @@ func (e *Editor) setDocumentAs(doc *Document, path, eol, enc string, mode openMo
 	e.dirty = false
 	e.applyWrap()
 	e.code.setDocRows(e.doc, ix)
+	// The language follows the file name, so a freshly opened document may need a
+	// different one (or none at all).
+	e.lang = e.detectLanguage()
+	e.applySyntax()
 	e.loading = false
 	e.refreshChrome()
 	freeMemory(doc.Len())
@@ -360,11 +364,11 @@ func (e *Editor) loadDocumentAs(path string, doc *Document, eol, enc string, mod
 					e.setContentAs(rec, path, enc, mode)
 					e.dirty = true
 					e.refreshChrome()
-					e.setStatus("recovered " + path + suffix)
+					e.setStatus("recovered " + shortPath(path) + suffix)
 				} else {
 					clearRecovery(path)
 					e.setDocumentAs(doc, path, eol, enc, mode, ix)
-					e.setStatus("opened " + path + suffix)
+					e.setStatus("opened " + shortPath(path) + suffix + e.languageSuffix())
 				}
 				e.addRecent(path)
 				runAfter(after)
@@ -374,7 +378,7 @@ func (e *Editor) loadDocumentAs(path string, doc *Document, eol, enc string, mod
 	clearRecovery(path)
 	e.setDocumentAs(doc, path, eol, enc, mode, ix)
 	e.addRecent(path)
-	e.setStatus("opened " + path + suffix)
+	e.setStatus("opened " + shortPath(path) + suffix + e.languageSuffix())
 	runAfter(after)
 }
 

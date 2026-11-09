@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "base": "https://raw.githubusercontent.com/AmirrezaSaadi/gaze-editor/main/langs/",
+  "languages": [
+    {
+      "id": "go",
+      "name": "Go",
+      "file": "go.json",
+      "version": 1,
+      "bytes": 1314,
+      "sha256": "fe07275a81e1d9eda0f9cf915c035f7200ff69e209501b7b288413c5c0375942"
+    },
+    {
+      "id": "json",
+      "name": "JSON",
+      "file": "json.json",
+      "version": 1,
+      "bytes": 338,
+      "sha256": "4f88d8b4a240d40d8869c6245accb93ac3afeba426ce125f3a818ce696f8dd71"
+    },
+    {
+      "id": "toml",
+      "name": "TOML",
+      "file": "toml.json",
+      "version": 1,
+      "bytes": 687,
+      "sha256": "74f22f0be7027938d84bd715ff3adb563680a0785bc3845e9a886045cac50cca"
+    },
+    {
+      "id": "yaml",
+      "name": "YAML",
+      "file": "yaml.json",
+      "version": 1,
+      "bytes": 623,
+      "sha256": "bf6c23dfa4014e03e054d9c74991689b286001d3db366ed3196fbe275c16dc3c"
+    },
+    {
+      "id": "markdown",
+      "name": "Markdown",
+      "file": "markdown.json",
+      "version": 1,
+      "bytes": 635,
+      "sha256": "78fee3c027441b9b2ff3ae061099f5f0af5e4305af18dda7997caa34e7ef63d0"
+    },
+    {
+      "id": "python",
+      "name": "Python",
+      "file": "python.json",
+      "version": 1,
+      "bytes": 1783,
+      "sha256": "a50f1fb84c588cbbf929045cb7bd3962e3195fcf121ff7ac030f1a683cd033d9"
+    },
+    {
+      "id": "rust",
+      "name": "Rust",
+      "file": "rust.json",
+      "version": 1,
+      "bytes": 1286,
+      "sha256": "1669d0ca7043390e046ee2309e64f7f5f0f2aa3b36a36a206eadb6f1d9985194"
+    },
+    {
+      "id": "c",
+      "name": "C",
+      "file": "c.json",
+      "version": 1,
+      "bytes": 1471,
+      "sha256": "583ef19bfe345a361f0f56abbb0040a097ba010cefea10ed5bcbae83bd252170"
+    },
+    {
+      "id": "cpp",
+      "name": "C++",
+      "file": "cpp.json",
+      "version": 1,
+      "bytes": 2082,
+      "sha256": "2f1b5421dbc3eebaf36314edf556dc68dc8d5cdaaef8447c5226be2ac54fe891"
+    },
+    {
+      "id": "javascript",
+      "name": "JavaScript",
+      "file": "javascript.json",
+      "version": 1,
+      "bytes": 1493,
+      "sha256": "20c213620a9546b7a7fe470e619abf738cde2efc2a4e3089d7f9b6398baaf260"
+    },
+    {
+      "id": "typescript",
+      "name": "TypeScript",
+      "file": "typescript.json",
+      "version": 1,
+      "bytes": 1855,
+      "sha256": "0db198d9662fb0cfd2e6fc077a484b6f706e6f2cba90b377c4e011a417f28845"
+    },
+    {
+      "id": "shell",
+      "name": "Shell",
+      "file": "shell.json",
+      "version": 1,
+      "bytes": 1079,
+      "sha256": "5c8cb325f0443bc581d131dd84bd2d22424bca90edf0dab69027102ad71eafd5"
+    },
+    {
+      "id": "ini",
+      "name": "INI / conf",
+      "file": "ini.json",
+      "version": 1,
+      "bytes": 686,
+      "sha256": "a5398cf2b8a4d73adc0b5c1f71330f85711600488dd84d1bc7d81c2274a08288"
+    },
+    {
+      "id": "dockerfile",
+      "name": "Dockerfile",
+      "file": "dockerfile.json",
+      "version": 1,
+      "bytes": 693,
+      "sha256": "6382ac7927db2508aa422a6c9255dbe3ef791c1efaf7072328199cc132c258d7"
+    },
+    {
+      "id": "makefile",
+      "name": "Makefile",
+      "file": "makefile.json",
+      "version": 1,
+      "bytes": 814,
+      "sha256": "990c8afa50ac8cf46ac1d34e7c56febe7e1ce5bd7b6ceae0ae3aedca1a34b65d"
+    }
+  ]
+}

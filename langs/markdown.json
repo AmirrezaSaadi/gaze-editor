@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "id": "markdown",
+  "name": "Markdown",
+  "extensions": [
+    "md",
+    "markdown",
+    "mdown"
+  ],
+  "filenames": [],
+  "line_comment": [],
+  "block_comment": [],
+  "strings": [],
+  "keywords": [],
+  "types": [],
+  "builtins": [],
+  "numbers": false,
+  "line_rules": [
+    {
+      "pattern": "^#{1,6} .*",
+      "class": "keyword"
+    },
+    {
+      "pattern": "^```.*",
+      "class": "string"
+    },
+    {
+      "pattern": "^>.*",
+      "class": "comment"
+    },
+    {
+      "pattern": "^\\s*[-*+] ",
+      "class": "keyword"
+    },
+    {
+      "pattern": "^\\s*[0-9]+\\. ",
+      "class": "keyword"
+    }
+  ]
+}

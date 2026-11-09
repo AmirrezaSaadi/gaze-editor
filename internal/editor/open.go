@@ -252,16 +252,15 @@ func (e *Editor) readStream(st *loadState, editsAtRequest uint64, path string, b
 	e.deliver(st, editsAtRequest, path, doc, eol, enc, err, mode, ix, after)
 }
 
-// showLoadBar puts the progress bar in the status row, left of the status text.
+// showLoadBar puts the progress bar at the left of the status row.
 func (e *Editor) showLoadBar() {
-	if e.loadBar == nil || e.statusBox == nil {
+	if e.loadBar == nil || e.loadSlot == nil {
 		return
 	}
 	e.loadBar.SetValue(0)
 	bar := container.NewCenter(container.NewGridWrap(fyne.NewSize(loadBarWidth, 10), e.loadBar))
-	row := container.NewBorder(nil, nil, bar, nil, e.status)
-	e.statusBox.Objects = []fyne.CanvasObject{row}
-	e.statusBox.Refresh()
+	e.loadSlot.Objects = []fyne.CanvasObject{bar}
+	e.loadSlot.Refresh()
 }
 
 // setLoadBar moves the progress bar, given how much has been read.
@@ -281,19 +280,16 @@ func (e *Editor) setLoadBar(read, total int64) {
 
 // hideLoadBar takes the progress bar back out of the status row.
 func (e *Editor) hideLoadBar() {
-	if e.loadBar == nil || e.statusBox == nil {
+	if e.loadSlot == nil || len(e.loadSlot.Objects) == 0 {
 		return
 	}
-	if len(e.statusBox.Objects) == 1 && e.statusBox.Objects[0] == e.status {
-		return
-	}
-	e.statusBox.Objects = []fyne.CanvasObject{e.status}
-	e.statusBox.Refresh()
+	e.loadSlot.Objects = nil
+	e.loadSlot.Refresh()
 }
 
 // loadBarShown reports whether the progress bar is in the status row, for tests.
 func (e *Editor) loadBarShown() bool {
-	return e.statusBox != nil && len(e.statusBox.Objects) == 1 && e.statusBox.Objects[0] != e.status
+	return e.loadSlot != nil && len(e.loadSlot.Objects) > 0
 }
 
 // installWhenIdle installs a loaded document, first asking when the buffer was

@@ -63,20 +63,20 @@ func TestCodeViewDrawsOnlyVisibleLines(t *testing.T) {
 	if vis < 5 {
 		t.Fatalf("only %d visible lines in a 900x650 window", vis)
 	}
-	if got := len(small.code.texts); got > vis+1 {
+	if got := small.code.textCount(); got > vis+1 {
 		t.Fatalf("%d text objects for %d visible lines", got, vis)
 	}
-	if len(big.code.texts) != len(small.code.texts) {
+	if big.code.textCount() != small.code.textCount() {
 		t.Fatalf("a 100x bigger document uses %d text objects instead of %d",
-			len(big.code.texts), len(small.code.texts))
+			big.code.textCount(), small.code.textCount())
 	}
-	if len(big.code.texts) > 200 {
-		t.Fatalf("%d text objects for one screen", len(big.code.texts))
+	if big.code.textCount() > 200 {
+		t.Fatalf("%d text objects for one screen", big.code.textCount())
 	}
 
 	// What is drawn is the screenful at the top, and nothing else.
 	first := ""
-	for _, t := range big.code.texts {
+	for _, t := range big.code.drawnTexts() {
 		if t.Visible() {
 			first = t.Text
 			break
@@ -88,11 +88,11 @@ func TestCodeViewDrawsOnlyVisibleLines(t *testing.T) {
 
 	// Scrolling far down keeps the object count and moves the content.
 	big.code.scrollLines(150000)
-	if len(big.code.texts) > 200 {
-		t.Fatalf("%d text objects after scrolling", len(big.code.texts))
+	if big.code.textCount() > 200 {
+		t.Fatalf("%d text objects after scrolling", big.code.textCount())
 	}
 	found := false
-	for _, t := range big.code.texts {
+	for _, t := range big.code.drawnTexts() {
 		if t.Visible() && strings.Contains(t.Text, "150000") {
 			found = true
 		}
@@ -111,7 +111,7 @@ func TestCodeViewScrolling(t *testing.T) {
 	if v.topRow != 100 {
 		t.Fatalf("top = %d, want 100", v.topRow)
 	}
-	if got := v.texts[0].Text; got != "line 100 of the big file" {
+	if got := v.drawnTexts()[0].Text; got != "line 100 of the big file" {
 		t.Fatalf("top line = %q", got)
 	}
 	if got := caretAt(e); got != "0:0" {
@@ -475,12 +475,12 @@ func TestCodeViewLongLine(t *testing.T) {
 	e, _ := openCode(t, line+"\nsecond\n")
 	v := e.code
 
-	if got, _, _ := v.lineDisplay(0, 0, 20); got != "abcdefghijabcdefghij" {
-		t.Fatalf("display slice = %q", got)
+	if segs, start := v.rowSegments(0, 0, 20); start != 0 || len(segs) != 1 || segs[0].text != "abcdefghijabcdefghij" {
+		t.Fatalf("display slice = %v from %d", segs, start)
 	}
-	got, start, _ := v.lineDisplay(0, 199990, 10)
-	if start != 199990 || got != "abcdefghij" {
-		t.Fatalf("far slice = %q from cell %d", got, start)
+	got, start := v.rowSegments(0, 199990, 10)
+	if start != 199990 || len(got) != 1 || got[0].text != "abcdefghij" {
+		t.Fatalf("far slice = %v from cell %d", got, start)
 	}
 	// Cell/column conversions are exact for a long line.
 	if got := v.cellOf(pos{row: 0, col: 199990}); got != 199990 {
@@ -517,9 +517,9 @@ func TestCodeViewTabs(t *testing.T) {
 	if got := v.cellOf(pos{row: 1, col: 3}); got != 4 {
 		t.Fatalf("cell after tab at column 2 = %d, want 4", got)
 	}
-	disp, start, _ := v.lineDisplay(0, 0, 10)
-	if disp != "    x" || start != 0 {
-		t.Fatalf("tab display = %q from %d", disp, start)
+	segs, start := v.rowSegments(0, 0, 10)
+	if len(segs) != 1 || segs[0].text != "    x" || start != 0 {
+		t.Fatalf("tab display = %v from %d", segs, start)
 	}
 	// Clicking inside a tab lands on the rune after it.
 	if got := v.colAtCell(0, 3); got != 1 {
@@ -727,7 +727,7 @@ func TestCodeViewWrapRendersVisualRows(t *testing.T) {
 			t.Fatalf("visual row %d is line %d chunk %d, want 1/%d", i, row, chunk, i)
 		}
 		want := long[i*cells : min((i+1)*cells, len(long))]
-		if got := v.texts[i].Text; got != want {
+		if got := v.drawnTexts()[i].Text; got != want {
 			t.Fatalf("visual row %d shows %q, want %q", i, got, want)
 		}
 	}
@@ -741,7 +741,7 @@ func TestCodeViewWrapRendersVisualRows(t *testing.T) {
 		t.Fatalf("topRow = %d after unwrapping, want the long line (1)", v.topRow)
 	}
 	// Unwrapped, only the cells that fit are drawn, from the left.
-	if got := v.texts[0].Text; got != long[:v.visibleCells()+1] {
+	if got := v.drawnTexts()[0].Text; got != long[:v.visibleCells()+1] {
 		t.Fatalf("the unwrapped line shows %d characters, want %d",
 			len(got), v.visibleCells()+1)
 	}

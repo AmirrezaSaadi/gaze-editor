@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "id": "makefile",
+  "name": "Makefile",
+  "extensions": [
+    "mk",
+    "mak"
+  ],
+  "filenames": [
+    "Makefile",
+    "makefile",
+    "GNUmakefile"
+  ],
+  "line_comment": [
+    "#"
+  ],
+  "block_comment": [],
+  "strings": [
+    {
+      "start": "\"",
+      "end": "\""
+    },
+    {
+      "start": "'",
+      "end": "'"
+    }
+  ],
+  "keywords": [
+    "ifdef",
+    "ifndef",
+    "ifeq",
+    "ifneq",
+    "else",
+    "endif",
+    "include",
+    "export",
+    "unexport",
+    "define",
+    "endef",
+    "override"
+  ],
+  "types": [],
+  "builtins": [
+    ".PHONY",
+    ".SUFFIXES",
+    ".SILENT",
+    "all",
+    "install",
+    "clean",
+    "test",
+    "build"
+  ],
+  "numbers": true,
+  "line_rules": [
+    {
+      "pattern": "^[A-Za-z0-9_.$(){}/ -]+:([^=]|$)",
+      "class": "keyword"
+    }
+  ]
+}

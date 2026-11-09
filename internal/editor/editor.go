@@ -28,6 +28,7 @@ const (
 	prefWrap     = "wordWrap"
 	prefTrim     = "trimOnSave"
 	prefAutosave = "autosave"
+	prefSyntax   = "syntaxHighlighting"
 )
 
 // Timing and size knobs. These are variables rather than constants so tests can
@@ -53,11 +54,11 @@ type Editor struct {
 	status *widget.Label
 	info   *widget.Label
 
-	// loadBar shows how far a background open has read. It sits in statusBox,
-	// which holds either just the status line or the bar plus the status line, so
-	// nothing has to be laid out for the bar until a file is actually loading.
-	loadBar   *widget.ProgressBar
-	statusBox *fyne.Container
+	// loadBar shows how far a background open has read. It is put in loadSlot,
+	// which is empty unless a file is loading, so the bar costs no room in the
+	// status bar when nothing is happening.
+	loadBar  *widget.ProgressBar
+	loadSlot *fyne.Container
 
 	// Every file is held in doc and edited through code, which draws the lines
 	// on screen itself, so the buffer never reaches a widget.Entry.
@@ -88,6 +89,10 @@ type Editor struct {
 	wrapItem     *fyne.MenuItem
 	trimItem     *fyne.MenuItem
 	autosaveItem *fyne.MenuItem
+	syntaxItem   *fyne.MenuItem
+	langItem     *fyne.MenuItem
+	langMenu     *fyne.Menu
+	langs        []*grammar // installed definitions, cached until one changes
 
 	themes *theme.Manager
 
@@ -98,6 +103,8 @@ type Editor struct {
 	wrap        bool
 	trimOnSave  bool
 	autosaveOn  bool
+	syntaxOn    bool
+	lang        *grammar
 
 	eol           string
 	enc           string
@@ -136,6 +143,7 @@ func New(a fyne.App, w fyne.Window) *Editor {
 		wrap:        a.Preferences().BoolWithFallback(prefWrap, true),
 		trimOnSave:  a.Preferences().BoolWithFallback(prefTrim, false),
 		autosaveOn:  a.Preferences().BoolWithFallback(prefAutosave, true),
+		syntaxOn:    a.Preferences().BoolWithFallback(prefSyntax, true),
 		indentWidth: 4,
 		eol:         eolLF,
 		enc:         encUTF8,
@@ -228,6 +236,8 @@ func (e *Editor) buildWidgets() {
 
 	e.status = widget.NewLabel("")
 	e.status.TextStyle = fyne.TextStyle{Monospace: true}
+	// A long path in a message must not run into the readout on the right.
+	e.status.Truncation = fyne.TextTruncateEllipsis
 
 	e.info = widget.NewLabel("")
 	e.info.Alignment = fyne.TextAlignTrailing
@@ -278,8 +288,10 @@ func (e *Editor) buildLayout() {
 	toolbar := container.NewHBox(newBtn, openBtn, saveBtn, findBtn, layout.NewSpacer(), themeBtn)
 
 	top := container.NewVBox(toolbar, e.findBar)
-	e.statusBox = container.NewStack(e.status)
-	bottom := container.NewBorder(nil, nil, container.NewPadded(e.statusBox), container.NewPadded(e.info))
+	// The status line is the middle of the bar, so it gets the width the readout
+	// on the right does not need and truncates instead of running into it.
+	e.loadSlot = container.NewStack()
+	bottom := container.NewBorder(nil, nil, e.loadSlot, container.NewPadded(e.info), container.NewPadded(e.status))
 	main := container.NewBorder(top, bottom, nil, nil, e.code)
 	e.win.SetContent(container.NewStack(main, e.tipLayer))
 	if c := e.win.Canvas(); c != nil {
@@ -325,12 +337,22 @@ func (e *Editor) buildMenus() {
 
 	e.wrapItem = fyne.NewMenuItem("Word Wrap", e.ToggleWrap)
 	e.wrapItem.Checked = e.wrap
+	e.syntaxItem = fyne.NewMenuItem("Syntax Highlighting", e.ToggleSyntax)
+	e.syntaxItem.Checked = e.syntaxOn
+	e.langMenu = fyne.NewMenu("Language")
+	e.langItem = fyne.NewMenuItem("Language", nil)
+	e.langItem.ChildMenu = e.langMenu
+	e.rebuildLanguageMenu()
 	e.trimItem = fyne.NewMenuItem("Trim Trailing Space on Save", e.ToggleTrim)
 	e.trimItem.Checked = e.trimOnSave
 	e.autosaveItem = fyne.NewMenuItem("Autosave for Recovery", e.ToggleAutosave)
 	e.autosaveItem.Checked = e.autosaveOn
 
 	view := fyne.NewMenu("View",
+		e.syntaxItem,
+		e.langItem,
+		fyne.NewMenuItem("Languages…", e.ShowLanguages),
+		fyne.NewMenuItemSeparator(),
 		e.wrapItem,
 		e.trimItem,
 		e.autosaveItem,
@@ -454,15 +476,19 @@ func (e *Editor) updateInfo() {
 	pos := fmt.Sprintf("%d:%d", line, col)
 	tail := fmt.Sprintf("%s · %s%s · %d%%", e.eolLabel(), e.indentLabel(),
 		e.encodingSuffix(), zoomPercent(e.themes.Zoom()))
+	lang := ""
+	if l := e.syntaxLabel(); l != "" {
+		lang = l + " · "
+	}
 	var out string
 	switch {
 	case !e.statsKnown:
 		// The counts of a big document are still being worked out.
-		out = pos + " · " + tail
+		out = lang + pos + " · " + tail
 	case e.largeFile:
-		out = fmt.Sprintf("%s · %dw · %dc · %s · large", pos, e.statWords, e.statChars, tail)
+		out = fmt.Sprintf("%s%s · %dw · %dc · %s · large", lang, pos, e.statWords, e.statChars, tail)
 	default:
-		out = fmt.Sprintf("%s · %dw · %dc · %s", pos, e.statWords, e.statChars, tail)
+		out = fmt.Sprintf("%s%s · %dw · %dc · %s", lang, pos, e.statWords, e.statChars, tail)
 	}
 	if out == e.lastInfo {
 		return

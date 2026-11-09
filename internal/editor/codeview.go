@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"image/color"
 	"math"
 	"sort"
 	"strings"
@@ -94,8 +95,20 @@ type codeView struct {
 	redo      []docEdit
 	undoBytes int
 
+	// hl holds the syntax highlighting for the document, or nil when the file
+	// has no language, is too large for one, or highlighting is switched off.
+	hl *highlighter
+	// segs is the pool of text objects: one row of them per visible line, so a
+	// highlighted line can be drawn as several coloured runs without allocating
+	// anything while scrolling.
+	segs    [][]*canvas.Text
+	segUsed []int
+	segBuf  []rowSegment
+	palette [styleClasses]color.NRGBA
+
+	plain styledLine // the fallback for a line when nothing is highlighted
+
 	bg        *canvas.Rectangle
-	texts     []*canvas.Text
 	sels      []*canvas.Rectangle
 	caretRect *canvas.Rectangle
 	track     *canvas.Rectangle
@@ -105,6 +118,7 @@ type codeView struct {
 
 func newCodeView(ed *Editor) *codeView {
 	v := &codeView{ed: ed}
+	v.palette = syntaxPalette(fyne.CurrentApp().Settings().ThemeVariant())
 	v.bg = canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
 	v.caretRect = canvas.NewRectangle(theme.Color(theme.ColorNamePrimary))
 	v.track = canvas.NewRectangle(theme.Color(theme.ColorNameScrollBarBackground))
@@ -138,6 +152,7 @@ func (v *codeView) setDoc(d *Document) { v.setDocRows(d, docIndex{}) }
 // is only ever a shortcut.
 func (v *codeView) setDocRows(d *Document, ix docIndex) {
 	v.doc = d
+	v.hl = nil // the language is picked for the new document by the editor
 	v.topRow, v.xoffCell = 0, 0
 	v.caret, v.anchor = pos{}, pos{}
 	v.undo, v.redo = nil, nil
@@ -506,8 +521,16 @@ func (v *codeView) patchRows(r0, oldLines, newLines int) {
 // applyReplace changes the document and keeps the visual row index in step.
 func (v *codeView) applyReplace(off int, del, ins string) {
 	r0 := 0
-	if v.wrap && v.doc != nil {
-		r0, _ = v.doc.RowColOf(off)
+	if v.doc != nil {
+		r0 = v.doc.LineOf(off)
+		if v.wrap {
+			r0, _ = v.doc.RowColOf(off)
+		}
+	}
+	// An edit can turn the rest of the document into (or out of) a comment, so
+	// the highlighting is only trusted above the line that changed.
+	if v.hl != nil {
+		v.hl.dropFrom(v.doc.LineOf(off))
 	}
 	v.doc.ReplaceRange(off, off+len(del), ins)
 	if v.wrap {
@@ -1105,30 +1128,84 @@ func (v *codeView) colAtCell(row, cell int) int {
 	return col
 }
 
-// lineDisplay returns the part of a line that starts at or after fromCell, laid
-// out with tabs expanded, together with the cell it starts at.
-func (v *codeView) lineDisplay(row, fromCell, maxCells int) (text string, startCell int, endCell int) {
-	line := v.doc.LineText(row)
+// --- drawing the visible row ------------------------------------------------
+
+// maxRowSegments caps how many coloured runs one visual row may be drawn with, so
+// a crowded line can only ever multiply the object count by eight whatever a
+// definition asks for. Everything after the cap is drawn in the default colour.
+const maxRowSegments = 8
+
+// rowSegment is one coloured run of a visual row: the cell it starts at within
+// the row, its display text (with tabs expanded) and its style.
+type rowSegment struct {
+	cell  int
+	text  string
+	class styleClass
+}
+
+// lineOf returns the stored text of line row, for painting.
+func (v *codeView) lineOf(row int) *styledLine {
+	if v.doc == nil {
+		return &styledLine{}
+	}
+	if v.hl != nil {
+		return v.hl.styled(v.doc, row)
+	}
+	v.plain.text = v.doc.LineText(row)
+	v.plain.spans = nil
+	return &v.plain
+}
+
+// rowSegments splits the cell window [fromCell, fromCell+maxCells) of the row into
+// coloured runs, expanding tabs as the renderer wants them drawn. It returns the
+// cell the row starts at, which is fromCell unless the line is shorter.
+func (v *codeView) rowSegments(row, fromCell, maxCells int) ([]rowSegment, int) {
+	sl := v.lineOf(row)
+	segs := v.segBuf[:0]
+	indent := v.ed.indentWidth
+	if indent < 1 {
+		indent = 1
+	}
+	cells, startCell := 0, -1
+	ri, si := 0, 0
 	var b strings.Builder
-	cells := 0
-	started := false
-	for _, r := range line {
+	curCell, cur := 0, stylePlain
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		segs = append(segs, rowSegment{cell: curCell, text: b.String(), class: cur})
+		b.Reset()
+	}
+	for _, r := range sl.text {
+		for si < len(sl.spans) && ri >= sl.spans[si].to {
+			si++
+		}
+		cls := stylePlain
+		if si < len(sl.spans) && ri >= sl.spans[si].from {
+			cls = sl.spans[si].class
+		}
+		ri++
 		w := 1
 		if r == '\t' {
-			w = v.ed.indentWidth - cells%v.ed.indentWidth
+			w = indent - cells%indent
 		}
 		if cells+w <= fromCell {
 			cells += w
 			continue
 		}
-		if !started {
-			startCell, started = cells, true
+		if startCell < 0 {
+			startCell = cells
 		}
 		if cells-startCell >= maxCells {
-			return b.String(), startCell, cells
+			break
+		}
+		if cls != cur && len(segs)+1 < maxRowSegments {
+			flush()
+			cur, curCell = cls, cells-startCell
 		}
 		if r == '\t' {
-			for i := 0; i < w; i++ {
+			for k := 0; k < w; k++ {
 				b.WriteByte(' ')
 			}
 		} else {
@@ -1136,10 +1213,12 @@ func (v *codeView) lineDisplay(row, fromCell, maxCells int) (text string, startC
 		}
 		cells += w
 	}
-	if !started {
+	flush()
+	if startCell < 0 {
 		startCell = cells
 	}
-	return b.String(), startCell, cells
+	v.segBuf = segs
+	return segs, startCell
 }
 
 // posAtPoint is the caret position nearest to a point in widget coordinates.
@@ -1523,9 +1602,10 @@ func (r *codeRenderer) Refresh() {
 	v.caretRect.Refresh()
 	v.track.Refresh()
 	v.thumb.Refresh()
-	for _, t := range v.texts {
-		t.Color = th.Color(theme.ColorNameForeground, variant)
-	}
+	// The token colours follow the theme variant; sync repaints anything whose
+	// colour changed.
+	v.palette = syntaxPalette(variant)
+	v.segDrop()
 	for _, s := range v.sels {
 		s.FillColor = th.Color(theme.ColorNameSelection, variant)
 	}
@@ -1538,32 +1618,80 @@ func (r *codeRenderer) Objects() []fyne.CanvasObject { return r.objects }
 // Destroy drops the renderer's reference to the widget.
 func (r *codeRenderer) Destroy() {}
 
-// ensure grows the object pools and rebuilds the draw order.
+// ensure grows the object pools. Text objects are pooled per row and segment, so
+// a highlighted line can draw several coloured runs while scrolling allocates
+// nothing.
 func (r *codeRenderer) ensure(lines int) {
 	v := r.v
 	th := v.Theme()
 	variant := v.ed.app.Settings().ThemeVariant()
-	size := th.Size(theme.SizeNameText)
 
-	for len(v.texts) < lines {
-		t := canvas.NewText("", th.Color(theme.ColorNameForeground, variant))
-		t.TextStyle = fyne.TextStyle{Monospace: true}
-		t.TextSize = size
-		v.texts = append(v.texts, t)
+	for len(v.segs) < lines {
+		v.segs = append(v.segs, nil)
+		v.segUsed = append(v.segUsed, 0)
 	}
 	for len(v.sels) < lines {
 		v.sels = append(v.sels, canvas.NewRectangle(th.Color(theme.ColorNameSelection, variant)))
 	}
+	r.rebuildObjects()
+}
 
+// segText returns the text object for segment k of row, creating it on demand.
+func (v *codeView) segText(row, k int) *canvas.Text {
+	pool := v.segs[row]
+	for len(pool) <= k {
+		t := canvas.NewText("", v.palette[stylePlain])
+		t.TextStyle = fyne.TextStyle{Monospace: true}
+		t.TextSize = v.Theme().Size(theme.SizeNameText)
+		pool = append(pool, t)
+	}
+	v.segs[row] = pool
+	return pool[k]
+}
+
+// rebuildObjects lists the drawing order: background, selection, text, caret, bars.
+func (r *codeRenderer) rebuildObjects() {
+	v := r.v
 	r.objects = r.objects[:0]
 	r.objects = append(r.objects, v.bg)
 	for _, s := range v.sels {
 		r.objects = append(r.objects, s)
 	}
-	for _, t := range v.texts {
-		r.objects = append(r.objects, t)
+	for _, pool := range v.segs {
+		for _, t := range pool {
+			r.objects = append(r.objects, t)
+		}
 	}
 	r.objects = append(r.objects, v.caretRect, v.track, v.thumb)
+}
+
+// textCount is how many text objects the view holds. It has to follow the size of
+// the screen, never the size of the document.
+func (v *codeView) textCount() int {
+	n := 0
+	for _, pool := range v.segs {
+		n += len(pool)
+	}
+	return n
+}
+
+// drawnTexts lists every text object of the view, for tests.
+func (v *codeView) drawnTexts() []*canvas.Text {
+	out := make([]*canvas.Text, 0, v.textCount())
+	for _, pool := range v.segs {
+		out = append(out, pool...)
+	}
+	return out
+}
+
+// segDrop forgets the segment pools, e.g. after the row count of the document or
+// the theme changed.
+func (v *codeView) segDrop() {
+	for _, pool := range v.segs {
+		for _, t := range pool {
+			t.Hide()
+		}
+	}
 }
 
 // sync lays out and fills the visible lines.
@@ -1598,14 +1726,15 @@ func (r *codeRenderer) sync() {
 		}
 		return poolStarts
 	}
-	for i, t := range v.texts {
-		g := v.topRow + i
-		if i >= vis || g >= total {
-			t.Hide()
+	for i := range v.segs {
+		if i >= vis || v.topRow+i >= total {
+			for k := 0; k < v.segUsed[i]; k++ {
+				v.segs[i][k].Hide()
+			}
+			v.segUsed[i] = 0
 			continue
 		}
-		t.Show()
-		row, chunk := v.rowOf(g)
+		row, chunk := v.rowOf(v.topRow + i)
 		from, limit := v.xoffCell, v.visibleCells()+1
 		if v.wrap {
 			starts := rowStartsFor(row)
@@ -1619,20 +1748,39 @@ func (r *codeRenderer) sync() {
 				limit = starts[chunk+1] - from
 			}
 		}
-		text, startCell, _ := v.lineDisplay(row, from, limit)
-		if t.Text != text {
-			t.Text = text
-			t.Refresh()
+		// The row is drawn as one run of text, or as several when the language
+		// colours parts of it: each run is a cell offset and a colour.
+		segs, _ := v.rowSegments(row, from, limit)
+		used := 0
+		for _, sg := range segs {
+			if used >= maxRowSegments {
+				break
+			}
+			t := v.segText(i, used)
+			if t.Text != sg.text {
+				t.Text = sg.text
+				t.Refresh()
+			}
+			if c := v.palette[sg.class]; t.Color != c {
+				t.Color = c
+				t.Refresh()
+			}
+			at := fyne.NewPos(inset+float32(sg.cell)*charW, inset+float32(i)*lineH)
+			if t.Position() != at {
+				t.Move(at)
+			}
+			if sz := fyne.NewSize(width, lineH); t.Size() != sz {
+				t.Resize(sz)
+			}
+			t.Show()
+			used++
 		}
-		at := fyne.NewPos(inset+float32(startCell-from)*charW, inset+float32(i)*lineH)
-		if t.Position() != at {
-			t.Move(at)
+		for k := used; k < v.segUsed[i]; k++ {
+			v.segs[i][k].Hide()
 		}
-		size := fyne.NewSize(width, lineH)
-		if t.Size() != size {
-			t.Resize(size)
-		}
+		v.segUsed[i] = used
 	}
+	r.rebuildObjects()
 
 	r.syncSelection(vis, lineH, charW, inset)
 	r.syncCaret(lineH, charW, inset)

@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "id": "toml",
+  "name": "TOML",
+  "extensions": [
+    "toml"
+  ],
+  "filenames": [],
+  "line_comment": [
+    "#"
+  ],
+  "block_comment": [],
+  "strings": [
+    {
+      "start": "\"\"\"",
+      "end": "\"\"\"",
+      "escape": "\\",
+      "multiline": true
+    },
+    {
+      "start": "'''",
+      "end": "'''",
+      "multiline": true
+    },
+    {
+      "start": "\"",
+      "end": "\"",
+      "escape": "\\"
+    },
+    {
+      "start": "'",
+      "end": "'"
+    }
+  ],
+  "keywords": [
+    "true",
+    "false"
+  ],
+  "types": [],
+  "builtins": [],
+  "numbers": true,
+  "line_rules": [
+    {
+      "pattern": "^\\[\\[?[^\\]]*\\]?\\]",
+      "class": "type"
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "id": "dockerfile",
+  "name": "Dockerfile",
+  "extensions": [],
+  "filenames": [
+    "Dockerfile",
+    "Containerfile"
+  ],
+  "line_comment": [
+    "#"
+  ],
+  "block_comment": [],
+  "strings": [
+    {
+      "start": "\"",
+      "end": "\"",
+      "escape": "\\"
+    },
+    {
+      "start": "'",
+      "end": "'"
+    }
+  ],
+  "keywords": [
+    "FROM",
+    "RUN",
+    "CMD",
+    "LABEL",
+    "MAINTAINER",
+    "EXPOSE",
+    "ENV",
+    "ADD",
+    "COPY",
+    "ENTRYPOINT",
+    "VOLUME",
+    "USER",
+    "WORKDIR",
+    "ARG",
+    "ONBUILD",
+    "STOPSIGNAL",
+    "HEALTHCHECK",
+    "SHELL",
+    "AS"
+  ],
+  "types": [],
+  "builtins": [],
+  "numbers": true,
+  "line_rules": []
+}

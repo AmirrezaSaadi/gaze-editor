@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "id": "json",
+  "name": "JSON",
+  "extensions": [
+    "json",
+    "jsonl",
+    "ndjson",
+    "geojson"
+  ],
+  "filenames": [],
+  "line_comment": [],
+  "block_comment": [],
+  "strings": [
+    {
+      "start": "\"",
+      "end": "\"",
+      "escape": "\\"
+    }
+  ],
+  "keywords": [
+    "true",
+    "false",
+    "null"
+  ],
+  "types": [],
+  "builtins": [],
+  "numbers": true,
+  "line_rules": []
+}

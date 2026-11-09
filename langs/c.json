@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "id": "c",
+  "name": "C",
+  "extensions": [
+    "c",
+    "h"
+  ],
+  "filenames": [],
+  "line_comment": [
+    "//"
+  ],
+  "block_comment": [
+    {
+      "start": "/*",
+      "end": "*/"
+    }
+  ],
+  "strings": [
+    {
+      "start": "\"",
+      "end": "\"",
+      "escape": "\\"
+    },
+    {
+      "start": "'",
+      "end": "'",
+      "escape": "\\"
+    }
+  ],
+  "keywords": [
+    "auto",
+    "break",
+    "case",
+    "const",
+    "continue",
+    "default",
+    "do",
+    "else",
+    "enum",
+    "extern",
+    "for",
+    "goto",
+    "if",
+    "inline",
+    "register",
+    "restrict",
+    "return",
+    "sizeof",
+    "static",
+    "struct",
+    "switch",
+    "typedef",
+    "union",
+    "volatile",
+    "while",
+    "_Bool",
+    "_Static_assert"
+  ],
+  "types": [
+    "char",
+    "double",
+    "float",
+    "int",
+    "long",
+    "short",
+    "signed",
+    "unsigned",
+    "void",
+    "size_t",
+    "ssize_t",
+    "int8_t",
+    "int16_t",
+    "int32_t",
+    "int64_t",
+    "uint8_t",
+    "uint16_t",
+    "uint32_t",
+    "uint64_t",
+    "bool"
+  ],
+  "builtins": [
+    "NULL",
+    "EOF",
+    "stdout",
+    "stderr",
+    "stdin",
+    "printf",
+    "fprintf",
+    "sprintf",
+    "snprintf",
+    "malloc",
+    "calloc",
+    "realloc",
+    "free",
+    "memcpy",
+    "memset",
+    "strlen",
+    "strcmp",
+    "strcpy",
+    "strncpy"
+  ],
+  "numbers": true,
+  "line_rules": [
+    {
+      "pattern": "^\\s*#\\s*[a-zA-Z]+",
+      "class": "keyword"
+    }
+  ]
+}

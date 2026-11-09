@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "id": "javascript",
+  "name": "JavaScript",
+  "extensions": [
+    "js",
+    "mjs",
+    "cjs",
+    "jsx"
+  ],
+  "filenames": [],
+  "line_comment": [
+    "//"
+  ],
+  "block_comment": [
+    {
+      "start": "/*",
+      "end": "*/"
+    }
+  ],
+  "strings": [
+    {
+      "start": "\"",
+      "end": "\"",
+      "escape": "\\"
+    },
+    {
+      "start": "'",
+      "end": "'",
+      "escape": "\\"
+    },
+    {
+      "start": "`",
+      "end": "`",
+      "escape": "\\",
+      "multiline": true
+    }
+  ],
+  "keywords": [
+    "async",
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "export",
+    "extends",
+    "finally",
+    "for",
+    "from",
+    "function",
+    "get",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "let",
+    "new",
+    "of",
+    "return",
+    "set",
+    "static",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield"
+  ],
+  "types": [],
+  "builtins": [
+    "Array",
+    "Boolean",
+    "Date",
+    "Error",
+    "Function",
+    "JSON",
+    "Map",
+    "Math",
+    "Number",
+    "Object",
+    "Promise",
+    "Proxy",
+    "Reflect",
+    "RegExp",
+    "Set",
+    "String",
+    "Symbol",
+    "WeakMap",
+    "console",
+    "document",
+    "globalThis",
+    "module",
+    "process",
+    "require",
+    "window"
+  ],
+  "numbers": true,
+  "line_rules": []
+}

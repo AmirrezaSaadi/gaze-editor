@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "id": "shell",
+  "name": "Shell",
+  "extensions": [
+    "sh",
+    "bash",
+    "zsh",
+    "ksh",
+    "fish",
+    "bats"
+  ],
+  "filenames": [],
+  "line_comment": [
+    "#"
+  ],
+  "block_comment": [],
+  "strings": [
+    {
+      "start": "\"",
+      "end": "\"",
+      "escape": "\\"
+    },
+    {
+      "start": "'",
+      "end": "'"
+    }
+  ],
+  "keywords": [
+    "if",
+    "then",
+    "elif",
+    "else",
+    "fi",
+    "for",
+    "while",
+    "until",
+    "do",
+    "done",
+    "case",
+    "esac",
+    "in",
+    "function",
+    "select",
+    "time",
+    "return",
+    "break",
+    "continue",
+    "local",
+    "export",
+    "readonly",
+    "declare",
+    "typeset",
+    "unset",
+    "shift",
+    "source",
+    "alias"
+  ],
+  "types": [],
+  "builtins": [
+    "echo",
+    "printf",
+    "read",
+    "cd",
+    "pwd",
+    "test",
+    "exit",
+    "trap",
+    "set",
+    "eval",
+    "exec",
+    "command",
+    "builtin",
+    "type",
+    "true",
+    "false"
+  ],
+  "numbers": true,
+  "line_rules": [
+    {
+      "pattern": "^#!.*",
+      "class": "comment"
+    }
+  ]
+}

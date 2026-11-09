@@ -1,0 +1,103 @@
+{
+  "schema": 1,
+  "id": "rust",
+  "name": "Rust",
+  "extensions": [
+    "rs"
+  ],
+  "filenames": [],
+  "line_comment": [
+    "//"
+  ],
+  "block_comment": [
+    {
+      "start": "/*",
+      "end": "*/"
+    }
+  ],
+  "strings": [
+    {
+      "start": "\"",
+      "end": "\"",
+      "escape": "\\"
+    }
+  ],
+  "keywords": [
+    "as",
+    "async",
+    "await",
+    "break",
+    "const",
+    "continue",
+    "crate",
+    "dyn",
+    "else",
+    "enum",
+    "extern",
+    "fn",
+    "for",
+    "if",
+    "impl",
+    "in",
+    "let",
+    "loop",
+    "match",
+    "mod",
+    "move",
+    "mut",
+    "pub",
+    "ref",
+    "return",
+    "static",
+    "struct",
+    "super",
+    "trait",
+    "type",
+    "unsafe",
+    "use",
+    "where",
+    "while"
+  ],
+  "types": [
+    "bool",
+    "char",
+    "f32",
+    "f64",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "i128",
+    "isize",
+    "str",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "u128",
+    "usize",
+    "String",
+    "Vec",
+    "Option",
+    "Result",
+    "Box"
+  ],
+  "builtins": [
+    "assert",
+    "debug_assert",
+    "eprint",
+    "eprintln",
+    "format",
+    "panic",
+    "print",
+    "println",
+    "todo",
+    "unimplemented",
+    "unreachable",
+    "vec",
+    "write",
+    "writeln"
+  ],
+  "numbers": true,
+  "line_rules": []
+}
