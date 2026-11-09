@@ -11,6 +11,32 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.10.1] - 2026-11-09
+
+Two focus and pointer bugs, the first ones reported from a Windows build.
+
+### Fixed
+
+- **The editor stopped taking keystrokes after a dialog closed.** A dialog takes
+  keyboard focus and does not hand it back, which left the window with nothing
+  focused at all: typing went nowhere, so a file opened through File → Open (or a
+  new buffer confirmed through a prompt) could not be edited. Focus now returns to
+  the editing surface when a document is installed, when one of the editor's own
+  dialogs closes, and when the text is clicked — and a keystroke that arrives with
+  nothing focused is still delivered to the editor instead of being dropped.
+- **A modifier could stay stuck down.** A key released while another window had
+  focus never reached the widget, so Ctrl or Alt could look held and swallow every
+  keystroke. Regaining focus clears them.
+- **The pointer over the scrollbar showed the text caret.** The bar is drawn by
+  the editor, so the whole widget answered with the editing cursor; over the bar
+  (while it is drawn) it is the default arrow now.
+
+### Tests
+
+- `focus_test.go`: the cursor over the bar and over the text, typing with nothing
+  focused, a dialog keeping the keyboard while it is up, focus returning when it
+  closes, clicking the text, stuck modifiers, and focus after an open.
+
 ## [1.10.0] - 2026-11-09
 
 Syntax highlighting, from definitions that are data.
