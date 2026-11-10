@@ -110,6 +110,17 @@ type codeView struct {
 
 	plain styledLine // the fallback for a line when nothing is highlighted
 
+	// brushes are the boxes drawn behind a matched bracket pair, and the match is
+	// cached on the caret and the edit count because repainting asks every time.
+	brushes [2]*canvas.Rectangle
+	brColor color.NRGBA
+	brValid bool
+	brOK    bool
+	brFrom  pos
+	brTo    pos
+	brCaret pos
+	brSeq   uint64
+
 	bg        *canvas.Rectangle
 	sels      []*canvas.Rectangle
 	caretRect *canvas.Rectangle
@@ -123,6 +134,11 @@ func newCodeView(ed *Editor) *codeView {
 	v.palette = syntaxPalette(fyne.CurrentApp().Settings().ThemeVariant())
 	v.bg = canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
 	v.caretRect = canvas.NewRectangle(theme.Color(theme.ColorNamePrimary))
+	for i := range v.brushes {
+		v.brushes[i] = canvas.NewRectangle(theme.Color(theme.ColorNamePrimary))
+		v.brushes[i].CornerRadius = 2
+		v.brushes[i].Hide()
+	}
 	v.track = canvas.NewRectangle(theme.Color(theme.ColorNameScrollBarBackground))
 	v.track.CornerRadius = 2
 	v.thumb = canvas.NewRectangle(theme.Color(theme.ColorNameScrollBar))
@@ -153,6 +169,7 @@ func (v *codeView) setDoc(d *Document) { v.setDocRows(d, docIndex{}) }
 // stale index is detected and rebuilt by the reflow guard in the renderer, so it
 // is only ever a shortcut.
 func (v *codeView) setDocRows(d *Document, ix docIndex) {
+	v.brValid = false
 	v.doc = d
 	v.hl = nil // the language is picked for the new document by the editor
 	v.topRow, v.xoffCell = 0, 0
@@ -1641,6 +1658,15 @@ func (r *codeRenderer) Refresh() {
 	v.caretRect.FillColor = th.Color(theme.ColorNamePrimary, variant)
 	v.track.FillColor = th.Color(theme.ColorNameScrollBarBackground, variant)
 	v.thumb.FillColor = th.Color(theme.ColorNameScrollBar, variant)
+	// A matched bracket is marked with a soft box, not a coloured glyph: the glyph
+	// belongs to the syntax highlighter.
+	brush := color.NRGBAModel.Convert(th.Color(theme.ColorNamePrimary, variant)).(color.NRGBA)
+	brush.A = 0x44
+	v.brColor = brush
+	for _, b := range v.brushes {
+		b.FillColor = brush
+		b.Refresh()
+	}
 	v.bg.Refresh()
 	v.caretRect.Refresh()
 	v.track.Refresh()
@@ -1699,6 +1725,9 @@ func (r *codeRenderer) rebuildObjects() {
 	r.objects = append(r.objects, v.bg)
 	for _, s := range v.sels {
 		r.objects = append(r.objects, s)
+	}
+	for _, b := range v.brushes {
+		r.objects = append(r.objects, b)
 	}
 	for _, pool := range v.segs {
 		for _, t := range pool {
@@ -1826,6 +1855,7 @@ func (r *codeRenderer) sync() {
 	r.rebuildObjects()
 
 	r.syncSelection(vis, lineH, charW, inset)
+	r.syncBrackets(lineH, charW, inset)
 	r.syncCaret(lineH, charW, inset)
 
 	// Scrollbar.
