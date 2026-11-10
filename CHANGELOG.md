@@ -11,6 +11,64 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.11.0] - 2026-11-10
+
+Typing that knows about code, and comments you can toggle.
+
+### Added
+
+- **Smart typing** (View → Smart Typing, on by default, persisted). Enter keeps
+  the indentation of the line it starts on, opens one level deeper after `{`, `(`
+  or `[` and after a block colon (`def f():`, `case 1:`, YAML), and pushes a
+  closing bracket that sat at the caret onto its own line — so a one-line `{}`
+  splits into a block. A caret inside the indentation breaks below it instead of
+  repeating the prefix. Backspace in the margin removes a whole indentation level.
+  Tab and Shift+Tab over a selection indent or outdent every line of it as one
+  undoable edit.
+- **Auto-close brackets** (View → Auto-close Brackets, on by default, persisted).
+  An opener inserts its pair and leaves the caret between the halves; an opener
+  typed over a single-line selection wraps the selection; a closing bracket typed
+  where its partner already sits steps over it; backspace inside an empty pair
+  removes both; Enter inside a fresh pair splits it. A quote after a word is left
+  alone, so an apostrophe stays an apostrophe.
+- **Toggle Comment** — `Ctrl+/` (Edit → Toggle Comment) comments out the selected
+  lines, or the caret's line, and takes it off again when every line that holds
+  anything is already commented. Indentation is kept, blank lines are left blank,
+  and it is one undo step. The delimiters come from the language definition — they
+  were already there for the highlighter, `parseGrammar` simply dropped them — so
+  a language without line comments gets its block comment wrapped around the
+  block, and a language with no comment syntax at all says so.
+- **Bracket match highlight** — the bracket at the caret (or the one it just moved
+  past) and its partner are marked with a soft box drawn behind the glyphs. Other
+  kinds of bracket are skipped when searching, so nesting reads correctly, and the
+  search stops after 100,000 characters: a pair further apart is not looked for, so
+  a keystroke in a huge buffer never waits on it.
+
+### Changed
+
+- Indent and Outdent (`Ctrl+]` / `Ctrl+[`) move the caret with its text instead of
+  dropping it at the start of the line.
+- Undo restores the selection the edit was made over, not just the caret.
+
+### Performance
+
+Measured on a 200k-line buffer, per keystroke: a plain character 0.18 ms, an opener
+with its pair 0.17 ms, a backspace over an indentation level 0.65 ms, a repaint with
+a bracket match 0.03–0.15 ms. A break costs what a break without the indentation
+costs — the line-index update, not the indentation, is the price. Commands that know
+where the caret belongs (`editAt`) apply the change and place the caret in one undo
+step and one repaint, which is what made the pair cost a third of what it was.
+
+### Tests
+
+- `typing_test.go` (auto-indent, tabs, braces, colon, plain mode, backspace over a
+  level and over a tab, block indent/outdent, undo of a block edit, a break in a
+  2000-line buffer), `comment_test.go` (one line, indentation, a block, mixed
+  commented/uncommented, the line-start rule, block comments, no syntax, the caret,
+  an empty line), `brackets_test.go` (both directions, the caret just past, nesting,
+  across lines, no match, the scan bound, selection and focus, box placement on
+  plain and wrapped rows, drawing order) and the auto-close cases.
+
 ## [1.10.1] - 2026-11-09
 
 Two focus and pointer bugs, the first ones reported from a Windows build.

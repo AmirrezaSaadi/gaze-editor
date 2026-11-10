@@ -53,7 +53,22 @@ day-to-day features you actually reach for — no plugin system, no bloat.
   capture groups), and a persisted **search history** (`Alt+Up` / `Alt+Down`);
   works across a whole large file, not just the visible window
 - **Go to line** — jump straight to a line number, or `file:line:col` on the CLI
-- **Line operations** — indent/outdent, move line up/down, duplicate line
+- **Smart typing** — a break keeps the indentation of the line it starts on, opens
+  a level after `{`, `(`, `[` or a block colon, and pushes a bracket that sat at the
+  caret onto its own line; backspace in the margin removes one indentation level;
+  Tab and Shift+Tab indent or outdent every selected line (persisted, on by
+  default)
+- **Brackets** — typing an opener inserts its pair (or wraps the selection in it),
+  typing a closer whose partner is already there steps over it, backspace inside an
+  empty pair removes both, and Enter inside a fresh pair splits it into a block;
+  the bracket at the caret and its partner are marked with a box, and the search
+  for a partner gives up after 100,000 characters so no keystroke waits on it
+  (pairing has its own persisted preference)
+- **Toggle comment** — `Ctrl+/` comments out the selected lines, or the caret's
+  line, and takes the comments off again; the delimiters come from the language
+  definition, so a language without line comments gets its block comment instead
+- **Line operations** — indent/outdent, move line up/down, duplicate line, toggle
+  comment
 - **Trim trailing whitespace on save** (optional, persisted)
 - **Line-ending aware** — CRLF/CR files are normalised for editing and restored
   on save; the convention is shown in the status bar
