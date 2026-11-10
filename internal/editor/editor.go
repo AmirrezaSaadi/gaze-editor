@@ -25,11 +25,12 @@ import (
 const (
 	appTitle = "Gaze"
 
-	prefWrap     = "wordWrap"
-	prefTrim     = "trimOnSave"
-	prefAutosave = "autosave"
-	prefSyntax   = "syntaxHighlighting"
-	prefSmart    = "smartTyping"
+	prefWrap      = "wordWrap"
+	prefTrim      = "trimOnSave"
+	prefAutosave  = "autosave"
+	prefSyntax    = "syntaxHighlighting"
+	prefSmart     = "smartTyping"
+	prefAutoClose = "autoCloseBrackets"
 )
 
 // Timing and size knobs. These are variables rather than constants so tests can
@@ -85,17 +86,18 @@ type Editor struct {
 	tipBG    *canvas.Rectangle
 	tipText  *canvas.Text
 
-	recentMenu   *fyne.Menu
-	themeItems   map[string]*fyne.MenuItem
-	wrapItem     *fyne.MenuItem
-	trimItem     *fyne.MenuItem
-	autosaveItem *fyne.MenuItem
-	syntaxItem   *fyne.MenuItem
-	smartItem    *fyne.MenuItem
-	langsDialog  *dialog.CustomDialog // open languages dialog, if any
-	langItem     *fyne.MenuItem
-	langMenu     *fyne.Menu
-	langs        []*grammar // installed definitions, cached until one changes
+	recentMenu    *fyne.Menu
+	themeItems    map[string]*fyne.MenuItem
+	wrapItem      *fyne.MenuItem
+	trimItem      *fyne.MenuItem
+	autosaveItem  *fyne.MenuItem
+	syntaxItem    *fyne.MenuItem
+	smartItem     *fyne.MenuItem
+	autoCloseItem *fyne.MenuItem
+	langsDialog   *dialog.CustomDialog // open languages dialog, if any
+	langItem      *fyne.MenuItem
+	langMenu      *fyne.Menu
+	langs         []*grammar // installed definitions, cached until one changes
 
 	themes *theme.Manager
 
@@ -108,6 +110,7 @@ type Editor struct {
 	autosaveOn  bool
 	syntaxOn    bool
 	smartTyping bool
+	autoClose   bool
 	lang        *grammar
 
 	eol           string
@@ -149,6 +152,7 @@ func New(a fyne.App, w fyne.Window) *Editor {
 		autosaveOn:  a.Preferences().BoolWithFallback(prefAutosave, true),
 		syntaxOn:    a.Preferences().BoolWithFallback(prefSyntax, true),
 		smartTyping: a.Preferences().BoolWithFallback(prefSmart, true),
+		autoClose:   a.Preferences().BoolWithFallback(prefAutoClose, true),
 		indentWidth: 4,
 		eol:         eolLF,
 		enc:         encUTF8,
@@ -402,6 +406,8 @@ func (e *Editor) buildMenus() {
 	e.autosaveItem.Checked = e.autosaveOn
 	e.smartItem = fyne.NewMenuItem("Smart Typing", e.ToggleSmartTyping)
 	e.smartItem.Checked = e.smartTyping
+	e.autoCloseItem = fyne.NewMenuItem("Auto-close Brackets", e.ToggleAutoClose)
+	e.autoCloseItem.Checked = e.autoClose
 
 	view := fyne.NewMenu("View",
 		e.syntaxItem,
@@ -410,6 +416,7 @@ func (e *Editor) buildMenus() {
 		fyne.NewMenuItemSeparator(),
 		e.wrapItem,
 		e.smartItem,
+		e.autoCloseItem,
 		e.trimItem,
 		e.autosaveItem,
 		fyne.NewMenuItemSeparator(),
@@ -694,6 +701,19 @@ func (e *Editor) ToggleSmartTyping() {
 		}
 	}
 	e.setStatus("smart typing: " + onOff(e.smartTyping))
+}
+
+// ToggleAutoClose flips pairing of brackets and quotes, and persists the choice.
+func (e *Editor) ToggleAutoClose() {
+	e.autoClose = !e.autoClose
+	e.app.Preferences().SetBool(prefAutoClose, e.autoClose)
+	if e.autoCloseItem != nil {
+		e.autoCloseItem.Checked = e.autoClose
+		if menu := e.win.MainMenu(); menu != nil {
+			menu.Refresh()
+		}
+	}
+	e.setStatus("auto-close brackets: " + onOff(e.autoClose))
 }
 
 // ToggleTrim flips trim-trailing-space-on-save and persists the choice.

@@ -743,6 +743,9 @@ func (v *codeView) deleteSelection() bool {
 
 // backspace deletes the character before the caret, or joins two lines.
 func (v *codeView) backspace() {
+	if v.deleteEmptyPair() {
+		return
+	}
 	if v.deleteSelection() {
 		return
 	}
@@ -1371,6 +1374,9 @@ func (v *codeView) overBar(x float32) bool {
 // TypedRune inserts a character at the caret.
 func (v *codeView) TypedRune(r rune) {
 	if v.doc == nil || v.ctrl || v.alt {
+		return
+	}
+	if v.autoClose(r) {
 		return
 	}
 	v.insertText(string(r))

@@ -1,6 +1,8 @@
 package editor
 
 import (
+	"strings"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 )
@@ -149,4 +151,88 @@ func (r *codeRenderer) syncBrackets(lineH, charW, inset float32) {
 	}
 	v.placeBrush(v.brushes[0], from, lineH, charW, inset)
 	v.placeBrush(v.brushes[1], to, lineH, charW, inset)
+}
+
+// closingPairs is what each opening character of a pair is closed with. The quote
+// runes close themselves, which is why this is not the same map as brackets.
+var closingPairs = map[rune]rune{
+	'(': ')', '[': ']', '{': '}',
+	'"': '"', '\'': '\'', '`': '`',
+}
+
+// autoClose deals with a typed character that opens or closes a pair, when
+// auto-closing is switched on. It reports whether it handled the character.
+func (v *codeView) autoClose(r rune) bool {
+	if !v.ed.autoClose || v.doc == nil {
+		return false
+	}
+	closer, opens := closingPairs[r]
+	if !opens {
+		// Only a closing bracket can step past the one in front of it: every other
+		// character is typed, even when the same character is already there.
+		if brackets[r] == 0 {
+			return false
+		}
+		if next, ok := v.runeAt(v.caret); ok && next == r {
+			v.setCaret(pos{row: v.caret.row, col: v.caret.col + 1})
+			return true
+		}
+		return false
+	}
+	quote := r == '"' || r == '\'' || r == '`'
+	if quote {
+		// The same quote ahead is the one that was inserted for this one.
+		if next, ok := v.runeAt(v.caret); ok && next == r {
+			v.setCaret(pos{row: v.caret.row, col: v.caret.col + 1})
+			return true
+		}
+		// A quote after a word is an apostrophe, or the end of a string.
+		if prev, ok := v.runeAt(pos{row: v.caret.row, col: v.caret.col - 1}); ok && isWordRune(prev) {
+			return false
+		}
+	}
+	// A selection is wrapped rather than replaced, as long as it is on one line.
+	if from, to, sel := v.selRange(); sel {
+		text := v.doc.TextRange(v.offset(from), v.offset(to))
+		if strings.ContainsRune(text, '\n') {
+			return false
+		}
+		open := string(r)
+		off := v.offset(from)
+		v.edit(off, text, open+text+string(closer), false)
+		v.anchor = v.posAt(off + len(open))
+		v.caret = v.posAt(off + len(open) + len(text))
+		v.followCaret()
+		v.render()
+		return true
+	}
+	off := v.offset(v.caret)
+	v.edit(off, "", string(r)+string(closer), false)
+	v.setCaret(v.posAt(off + 1))
+	return true
+}
+
+// deleteEmptyPair removes both halves of an empty pair the caret sits inside.
+func (v *codeView) deleteEmptyPair() bool {
+	if v.HasSelection() {
+		return false
+	}
+	prev, ok := v.runeAt(pos{row: v.caret.row, col: v.caret.col - 1})
+	if !ok {
+		return false
+	}
+	closer, opens := closingPairs[prev]
+	if !opens {
+		return false
+	}
+	next, ok := v.runeAt(v.caret)
+	if !ok || next != closer {
+		return false
+	}
+	start := pos{row: v.caret.row, col: v.caret.col - 1}
+	off := v.offset(start)
+	end := v.offset(pos{row: v.caret.row, col: v.caret.col + 1})
+	v.caret, v.anchor = start, start
+	v.edit(off, v.doc.TextRange(off, end), "", false)
+	return true
 }

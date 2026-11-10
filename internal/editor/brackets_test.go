@@ -175,3 +175,113 @@ func TestBracketBoxesAreDrawnBehindTheText(t *testing.T) {
 		}
 	}
 }
+
+// Typing an opener inserts the pair and puts the caret between them.
+func TestAutoCloseBrackets(t *testing.T) {
+	e := newTestEditor(t)
+	setBuffer(e, "")
+	text(e, "f(")
+	if got := e.text(); got != "f()" {
+		t.Fatalf("buffer = %q", got)
+	}
+	if caretAt(e) != "0:2" {
+		t.Fatalf("caret at %s, want 0:2", caretAt(e))
+	}
+	// Typing the closer steps over the one that was inserted for it.
+	text(e, "x)")
+	if got := e.text(); got != "f(x)" {
+		t.Fatalf("buffer = %q", got)
+	}
+	if caretAt(e) != "0:4" {
+		t.Fatalf("caret at %s, want 0:4", caretAt(e))
+	}
+}
+
+// Quotes pair, but not in the middle of a word.
+func TestAutoCloseQuotes(t *testing.T) {
+	e := newTestEditor(t)
+	setBuffer(e, "")
+	text(e, "say(\"hi\")")
+	if got := e.text(); got != "say(\"hi\")" {
+		t.Fatalf("buffer = %q", got)
+	}
+	if caretAt(e) != "0:9" {
+		t.Fatalf("caret at %s, want 0:9", caretAt(e))
+	}
+
+	e2 := newTestEditor(t)
+	setBuffer(e2, "")
+	text(e2, "don't")
+	if got := e2.text(); got != "don't" {
+		t.Fatalf("buffer = %q, want the apostrophe not to pair", got)
+	}
+}
+
+// A selection is wrapped rather than replaced.
+func TestAutoCloseWrapsTheSelection(t *testing.T) {
+	e := newTestEditor(t)
+	setBuffer(e, "call x now\n")
+	v := e.code
+	v.anchor = pos{row: 0, col: 5}
+	v.caret = pos{row: 0, col: 6}
+	text(e, "(")
+	if got := e.text(); got != "call (x) now\n" {
+		t.Fatalf("buffer = %q", got)
+	}
+	if v.anchor != (pos{row: 0, col: 6}) || v.caret != (pos{row: 0, col: 7}) {
+		t.Fatalf("selection = %v..%v, want the wrapped text still selected", v.anchor, v.caret)
+	}
+}
+
+// Backspace between the halves of an empty pair removes both.
+func TestAutoCloseBackspaceRemovesThePair(t *testing.T) {
+	e := newTestEditor(t)
+	setBuffer(e, "")
+	text(e, "if {}")
+	e.code.setCaret(pos{row: 0, col: 4}) // between the braces
+	key(e, fyne.KeyBackspace)
+	if got := e.text(); got != "if " {
+		t.Fatalf("buffer = %q", got)
+	}
+}
+
+// With auto-closing off nothing is inserted but the character that was typed.
+func TestAutoCloseOff(t *testing.T) {
+	e := newTestEditor(t)
+	e.autoClose = false
+	setBuffer(e, "")
+	text(e, "f(")
+	if got := e.text(); got != "f(" {
+		t.Fatalf("buffer = %q", got)
+	}
+	if caretAt(e) != "0:2" {
+		t.Fatalf("caret at %s, want 0:2", caretAt(e))
+	}
+}
+
+// Enter between a pair that was just typed splits it, which is the whole point of
+// pairing them.
+func TestAutoCloseAndEnterSplitThePair(t *testing.T) {
+	e := newTestEditor(t)
+	setBuffer(e, "")
+	text(e, "if {}")
+	e.code.setCaret(pos{row: 0, col: 4})
+	enter(e)
+	if got := e.text(); got != "if {\n    \n}" {
+		t.Fatalf("buffer = %q", got)
+	}
+	if caretAt(e) != "1:4" {
+		t.Fatalf("caret at %s, want 1:4", caretAt(e))
+	}
+}
+
+// Undo takes the pair back as one edit.
+func TestAutoCloseIsOneUndoStep(t *testing.T) {
+	e := newTestEditor(t)
+	setBuffer(e, "")
+	text(e, "(")
+	e.code.Undo()
+	if got := e.text(); got != "" {
+		t.Fatalf("buffer = %q after undo", got)
+	}
+}
