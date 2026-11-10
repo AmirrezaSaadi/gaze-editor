@@ -29,6 +29,7 @@ const (
 	prefTrim     = "trimOnSave"
 	prefAutosave = "autosave"
 	prefSyntax   = "syntaxHighlighting"
+	prefSmart    = "smartTyping"
 )
 
 // Timing and size knobs. These are variables rather than constants so tests can
@@ -90,6 +91,7 @@ type Editor struct {
 	trimItem     *fyne.MenuItem
 	autosaveItem *fyne.MenuItem
 	syntaxItem   *fyne.MenuItem
+	smartItem    *fyne.MenuItem
 	langsDialog  *dialog.CustomDialog // open languages dialog, if any
 	langItem     *fyne.MenuItem
 	langMenu     *fyne.Menu
@@ -105,6 +107,7 @@ type Editor struct {
 	trimOnSave  bool
 	autosaveOn  bool
 	syntaxOn    bool
+	smartTyping bool
 	lang        *grammar
 
 	eol           string
@@ -145,6 +148,7 @@ func New(a fyne.App, w fyne.Window) *Editor {
 		trimOnSave:  a.Preferences().BoolWithFallback(prefTrim, false),
 		autosaveOn:  a.Preferences().BoolWithFallback(prefAutosave, true),
 		syntaxOn:    a.Preferences().BoolWithFallback(prefSyntax, true),
+		smartTyping: a.Preferences().BoolWithFallback(prefSmart, true),
 		indentWidth: 4,
 		eol:         eolLF,
 		enc:         encUTF8,
@@ -395,6 +399,8 @@ func (e *Editor) buildMenus() {
 	e.trimItem.Checked = e.trimOnSave
 	e.autosaveItem = fyne.NewMenuItem("Autosave for Recovery", e.ToggleAutosave)
 	e.autosaveItem.Checked = e.autosaveOn
+	e.smartItem = fyne.NewMenuItem("Smart Typing", e.ToggleSmartTyping)
+	e.smartItem.Checked = e.smartTyping
 
 	view := fyne.NewMenu("View",
 		e.syntaxItem,
@@ -402,6 +408,7 @@ func (e *Editor) buildMenus() {
 		fyne.NewMenuItem("Languages…", e.ShowLanguages),
 		fyne.NewMenuItemSeparator(),
 		e.wrapItem,
+		e.smartItem,
 		e.trimItem,
 		e.autosaveItem,
 		fyne.NewMenuItemSeparator(),
@@ -672,6 +679,20 @@ func (e *Editor) ToggleWrap() {
 	if e.code != nil && e.wrap && !e.code.wrap {
 		e.setStatus("word wrap stays off — this file has too many lines to reflow")
 	}
+}
+
+// ToggleSmartTyping flips indentation-aware Enter, Backspace and Tab, and persists
+// the choice.
+func (e *Editor) ToggleSmartTyping() {
+	e.smartTyping = !e.smartTyping
+	e.app.Preferences().SetBool(prefSmart, e.smartTyping)
+	if e.smartItem != nil {
+		e.smartItem.Checked = e.smartTyping
+		if menu := e.win.MainMenu(); menu != nil {
+			menu.Refresh()
+		}
+	}
+	e.setStatus("smart typing: " + onOff(e.smartTyping))
 }
 
 // ToggleTrim flips trim-trailing-space-on-save and persists the choice.

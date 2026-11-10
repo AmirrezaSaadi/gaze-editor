@@ -42,13 +42,14 @@ func (p pos) before(q pos) bool {
 // docEdit is one reversible change: the text that was replaced and the text that
 // replaced it.
 type docEdit struct {
-	off   int    // byte offset in the document
-	old   string // text that was removed
-	ins   string // text that was inserted
-	caret pos    // caret before the edit
-	after pos    // caret after the edit
-	dirty bool   // dirty flag before the edit
-	at    time.Time
+	off    int    // byte offset in the document
+	old    string // text that was removed
+	ins    string // text that was inserted
+	caret  pos    // caret before the edit
+	anchor pos    // selection anchor before the edit
+	after  pos    // caret after the edit
+	dirty  bool   // dirty flag before the edit
+	at     time.Time
 }
 
 // codeView is the editing surface for large files: it renders the visible lines
@@ -652,8 +653,8 @@ func (v *codeView) edit(off int, del string, ins string, merge bool) {
 		}
 	}
 	v.applyReplace(off, del, ins)
-	e := docEdit{off: off, old: del, ins: ins, caret: before, after: v.posAt(off + len(ins)),
-		dirty: v.ed.dirty, at: time.Now()}
+	e := docEdit{off: off, old: del, ins: ins, caret: before, anchor: v.anchor,
+		after: v.posAt(off + len(ins)), dirty: v.ed.dirty, at: time.Now()}
 	v.undo = append(v.undo, e)
 	v.undoBytes += len(del) + len(ins)
 	v.redo = nil
@@ -665,8 +666,8 @@ func (v *codeView) edit(off int, del string, ins string, merge bool) {
 func (v *codeView) rawEdit(off int, del, ins string) {
 	v.applyReplace(off, del, ins)
 	v.undo = append(v.undo, docEdit{
-		off: off, old: del, ins: ins,
-		caret: v.caret, after: v.caret, dirty: v.ed.dirty, at: time.Now(),
+		off: off, old: del, ins: ins, caret: v.caret, anchor: v.anchor,
+		after: v.caret, dirty: v.ed.dirty, at: time.Now(),
 	})
 	v.undoBytes += len(del) + len(ins)
 	v.redo = nil
@@ -730,6 +731,9 @@ func (v *codeView) backspace() {
 	}
 	p := v.caret
 	if p.col > 0 {
+		if v.backspaceIndent(p) {
+			return
+		}
 		start := pos{row: p.row, col: p.col - 1}
 		off := v.offset(start)
 		v.anchor = start
@@ -767,44 +771,41 @@ func (v *codeView) deleteForward() {
 	v.edit(off, v.doc.TextRange(off, v.offset(end)), "", false)
 }
 
-// indents the caret's line by one level.
+// indents the caret's line by one level, or every selected line.
 func (v *codeView) indent() {
-	indent := v.ed.indentString()
-	v.anchor = pos{row: v.caret.row, col: v.caret.col + utf8Count(indent)}
-	v.caret = v.anchor
-	off := v.doc.LineStart(v.anchor.row)
-	v.edit(off, "", indent, false)
+	if v.HasSelection() && v.shiftLines(1) {
+		return
+	}
+	unit := v.ed.indentString()
+	row := v.caret.row
+	was := v.caret.col
+	off := v.doc.LineStart(row)
+	v.edit(off, "", unit, false)
+	v.setCaret(pos{row: row, col: was + utf8Count(unit)})
 }
 
 // outdents the caret's line by one level, if it starts with whitespace.
 func (v *codeView) outdent() {
-	line := v.doc.LineText(v.caret.row)
-	removed := 0
-	var width int
-	for _, r := range line {
-		if r == ' ' {
-			width++
-		} else if r == '\t' {
-			width += v.ed.indentWidth - width%v.ed.indentWidth
-		} else {
-			break
-		}
-		removed++
-		if width >= v.ed.indentWidth {
-			break
-		}
-	}
-	if removed == 0 {
+	if v.HasSelection() && v.shiftLines(-1) {
 		return
 	}
-	off := v.doc.LineStart(v.caret.row)
-	col := v.caret.col - removed
+	row := v.caret.row
+	indent := v.leadingSpace(row)
+	if indent == "" {
+		return
+	}
+	width := v.spaceWidth(indent)
+	keep := v.indentTo(indent, (width-1)/v.indentUnit()*v.indentUnit())
+	if keep >= utf8Count(indent) {
+		return
+	}
+	col := v.caret.col - (utf8Count(indent) - keep)
 	if col < 0 {
 		col = 0
 	}
-	v.anchor = pos{row: v.caret.row, col: col}
-	v.caret = v.anchor
-	v.edit(off, line[:runeByteOffset(line, removed)], "", false)
+	off := v.doc.LineStart(row)
+	v.edit(off, indent[runeByteOffset(indent, keep):], "", false)
+	v.setCaret(pos{row: row, col: col})
 }
 
 // moveLineUp swaps the caret's line with the one above it.
@@ -894,7 +895,7 @@ func (v *codeView) Undo() {
 	v.undoBytes -= len(e.old) + len(e.ins)
 	v.applyReplace(e.off, e.ins, e.old)
 	v.redo = append(v.redo, e)
-	v.caret, v.anchor = e.caret, e.caret
+	v.caret, v.anchor = e.caret, e.anchor
 	v.followCaret()
 	v.ed.onCodeChange()
 	v.ed.dirty = e.dirty // back to the state the edit was made from
@@ -1366,11 +1367,14 @@ func (v *codeView) TypedKey(ev *fyne.KeyEvent) {
 	extend := v.shift
 	switch ev.Name {
 	case fyne.KeyEnter, fyne.KeyReturn:
-		v.insertText("\n")
+		v.newline()
 	case fyne.KeyTab:
-		if v.shift {
+		switch {
+		case v.shift:
 			v.outdent()
-		} else {
+		case v.HasSelection():
+			v.indent()
+		default:
 			v.insertText(v.ed.indentString())
 		}
 	case fyne.KeyBackspace:
