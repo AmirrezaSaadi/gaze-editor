@@ -207,8 +207,7 @@ func (v *codeView) autoClose(r rune) bool {
 		return true
 	}
 	off := v.offset(v.caret)
-	v.edit(off, "", string(r)+string(closer), false)
-	v.setCaret(v.posAt(off + 1))
+	v.editAt(off, "", string(r)+string(closer), off+1)
 	return true
 }
 
@@ -229,10 +228,8 @@ func (v *codeView) deleteEmptyPair() bool {
 	if !ok || next != closer {
 		return false
 	}
-	start := pos{row: v.caret.row, col: v.caret.col - 1}
-	off := v.offset(start)
+	off := v.offset(pos{row: v.caret.row, col: v.caret.col - 1})
 	end := v.offset(pos{row: v.caret.row, col: v.caret.col + 1})
-	v.caret, v.anchor = start, start
-	v.edit(off, v.doc.TextRange(off, end), "", false)
+	v.editAt(off, v.doc.TextRange(off, end), "", off)
 	return true
 }

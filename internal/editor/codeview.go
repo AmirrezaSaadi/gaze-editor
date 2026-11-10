@@ -679,6 +679,26 @@ func (v *codeView) edit(off int, del string, ins string, merge bool) {
 	v.afterEdit(e.after)
 }
 
+// editAt replaces [off, off+len(del)) with ins and leaves the caret at the document
+// offset caret, as one undo step and one repaint. It is what the commands that know
+// where the caret belongs use, instead of editing and then moving it. The offset is
+// read after the change, so callers pass where the caret should end up.
+func (v *codeView) editAt(off int, del, ins string, caret int) {
+	if del == "" && ins == "" {
+		return
+	}
+	v.applyReplace(off, del, ins)
+	p := v.posAt(caret)
+	v.undo = append(v.undo, docEdit{
+		off: off, old: del, ins: ins, caret: v.caret, anchor: v.anchor,
+		after: p, dirty: v.ed.dirty, at: time.Now(),
+	})
+	v.undoBytes += len(del) + len(ins)
+	v.redo = nil
+	v.trimUndo()
+	v.afterEdit(p)
+}
+
 // rawEdit applies a change and records it, leaving the caret to the caller.
 func (v *codeView) rawEdit(off int, del, ins string) {
 	v.applyReplace(off, del, ins)
@@ -800,8 +820,7 @@ func (v *codeView) indent() {
 	row := v.caret.row
 	was := v.caret.col
 	off := v.doc.LineStart(row)
-	v.edit(off, "", unit, false)
-	v.setCaret(pos{row: row, col: was + utf8Count(unit)})
+	v.editAt(off, "", unit, v.offset(pos{row: row, col: was})+len(unit))
 }
 
 // outdents the caret's line by one level, if it starts with whitespace.
@@ -824,8 +843,7 @@ func (v *codeView) outdent() {
 		col = 0
 	}
 	off := v.doc.LineStart(row)
-	v.edit(off, indent[runeByteOffset(indent, keep):], "", false)
-	v.setCaret(pos{row: row, col: col})
+	v.editAt(off, indent[runeByteOffset(indent, keep):], "", v.offset(pos{row: row, col: col}))
 }
 
 // moveLineUp swaps the caret's line with the one above it.

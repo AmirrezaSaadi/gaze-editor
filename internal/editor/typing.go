@@ -97,10 +97,7 @@ func (v *codeView) newline() {
 		}
 	}
 	off := v.offset(v.caret)
-	v.edit(off, "", ins, false)
-	if back > 0 {
-		v.moveTo(v.posAt(off+len(ins)-back), false)
-	}
+	v.editAt(off, "", ins, off+len(ins)-back)
 }
 
 // blockOpener reports whether the text up to the caret opens a block, and which
@@ -159,11 +156,8 @@ func (v *codeView) backspaceIndent(p pos) bool {
 	if keep >= utf8Count(prefix) {
 		return false
 	}
-	start := pos{row: p.row, col: keep}
-	off := v.offset(start)
-	v.anchor = start
-	v.caret = start
-	v.edit(off, v.doc.TextRange(off, v.offset(p)), "", false)
+	off := v.offset(pos{row: p.row, col: keep})
+	v.editAt(off, v.doc.TextRange(off, v.offset(p)), "", off)
 	return true
 }
 
