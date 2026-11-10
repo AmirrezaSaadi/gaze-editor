@@ -256,3 +256,111 @@ func (v *codeView) shiftLines(delta int) bool {
 	v.render()
 	return true
 }
+
+// toggleComment comments the block of lines the caret or selection covers, or
+// uncomments it when every line with anything on it is commented already. A
+// language with no line comment gets the block comment wrapped around the block
+// instead.
+func (v *codeView) toggleComment(line, open, close string) bool {
+	first, last, ok := v.lineBlock()
+	if !ok {
+		return false
+	}
+	start, end := v.doc.LineStart(first), v.doc.LineStart(last+1)
+	if text := v.doc.TextRange(start, end); strings.TrimSpace(text) != "" {
+		if line == "" {
+			return v.wrapComment(start, text, open, close)
+		}
+		return v.commentLines(first, start, text, line)
+	}
+	return false
+}
+
+// commentLines adds or removes the line comment on every line that holds
+// anything, as one undoable edit.
+func (v *codeView) commentLines(first, start int, text, line string) bool {
+	lines := strings.Split(text, "\n")
+	commented, any := true, false
+	for _, ln := range lines {
+		body := strings.TrimLeft(ln, " \t")
+		if body == "" {
+			continue
+		}
+		any = true
+		if !strings.HasPrefix(body, line) {
+			commented = false
+		}
+	}
+	if !any {
+		return false
+	}
+	add := line + " "
+	deltas := make([]int, len(lines))
+	changed := false
+	for i, ln := range lines {
+		body := strings.TrimLeft(ln, " \t")
+		if body == "" {
+			continue // blank lines stay blank rather than gaining a comment
+		}
+		indent := ln[:len(ln)-len(body)]
+		out := indent + add + body
+		if commented {
+			rest := strings.TrimPrefix(body, line)
+			rest = strings.TrimPrefix(rest, " ")
+			out = indent + rest
+		}
+		if out == ln {
+			continue
+		}
+		lines[i] = out
+		deltas[i] = utf8Count(out) - utf8Count(ln)
+		changed = true
+	}
+	if !changed {
+		return false
+	}
+	v.replaceBlock(first, start, text, strings.Join(lines, "\n"), deltas)
+	return true
+}
+
+// wrapComment puts the block comment around the selected block, or takes it off.
+func (v *codeView) wrapComment(start int, text, open, close string) bool {
+	if open == "" || close == "" {
+		return false
+	}
+	indent := text[:len(text)-len(strings.TrimLeft(text, " \t"))]
+	body := text[len(indent):]
+	trailing := ""
+	for strings.HasSuffix(body, "\n") {
+		trailing += "\n"
+		body = body[:len(body)-1]
+	}
+	core := strings.TrimRight(body, " \t")
+	if strings.HasPrefix(core, open) && strings.HasSuffix(core, close) {
+		core = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(core, open), close))
+	} else {
+		core = open + " " + core + " " + close
+	}
+	out := indent + core + trailing
+	if out == text {
+		return false
+	}
+	v.replaceBlock(0, start, text, out, nil)
+	return true
+}
+
+// replaceBlock applies a whole-line edit and keeps the caret and selection close to
+// where they were, using the per-line rune deltas when it has them.
+func (v *codeView) replaceBlock(first, start int, text, out string, deltas []int) {
+	v.rawEdit(start, text, out)
+	if deltas != nil {
+		v.caret = v.shiftCol(v.caret, first, deltas)
+		v.anchor = v.shiftCol(v.anchor, first, deltas)
+	}
+	v.caret = v.clampPos(v.caret)
+	v.anchor = v.clampPos(v.anchor)
+	v.followCaret()
+	v.ed.onCodeChange()
+	v.ed.updateInfo()
+	v.render()
+}

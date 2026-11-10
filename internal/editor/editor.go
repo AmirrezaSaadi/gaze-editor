@@ -385,6 +385,7 @@ func (e *Editor) buildMenus() {
 		accel("Move Line Up", fyne.KeyUp, fyne.KeyModifierControl|fyne.KeyModifierShift, e.MoveLineUp),
 		accel("Move Line Down", fyne.KeyDown, fyne.KeyModifierControl|fyne.KeyModifierShift, e.MoveLineDown),
 		accel("Duplicate Line", fyne.KeyD, fyne.KeyModifierControl|fyne.KeyModifierShift, e.DuplicateLine),
+		accel("Toggle Comment", fyne.KeySlash, fyne.KeyModifierControl, e.ToggleComment),
 	)
 
 	e.wrapItem = fyne.NewMenuItem("Word Wrap", e.ToggleWrap)
@@ -758,6 +759,21 @@ func (e *Editor) MoveLineDown() {
 func (e *Editor) DuplicateLine() {
 	if e.code != nil {
 		e.code.duplicateLine()
+	}
+}
+
+// ToggleComment comments the selected lines out, or back in.
+func (e *Editor) ToggleComment() {
+	if e.code == nil || e.doc == nil {
+		return
+	}
+	g := e.lang
+	if g == nil || (g.lineComment == "" && g.blockStart == "") {
+		e.setStatus("no comment syntax for this language")
+		return
+	}
+	if !e.code.toggleComment(g.lineComment, g.blockStart, g.blockEnd) {
+		e.setStatus("nothing to comment")
 	}
 }
 

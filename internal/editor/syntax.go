@@ -79,13 +79,17 @@ type grammar struct {
 		escape     rune
 		multiline  bool
 	}
-	words     map[string]styleClass
-	numbers   bool
-	rules     []lineRule
-	states    []openState // flattened: blocks first, then multi-line strings
-	multiline bool        // whether any construct can cross a line
-	builtin   bool        // shipped with the editor
-	path      string      // where a non-built-in definition came from
+	words   map[string]styleClass
+	numbers bool
+	rules   []lineRule
+	states  []openState // flattened: blocks first, then multi-line strings
+	// The comment delimiters, for commenting out a selection.
+	lineComment string
+	blockStart  string
+	blockEnd    string
+	multiline   bool   // whether any construct can cross a line
+	builtin     bool   // shipped with the editor
+	path        string // where a non-built-in definition came from
 }
 
 // lineRule colours a prefix of a line, for things a word list cannot express:
@@ -197,6 +201,12 @@ func parseGrammar(data []byte) (*grammar, error) {
 			return nil, fmt.Errorf("a block comment needs both a start and an end")
 		}
 		g.blocks = append(g.blocks, struct{ start, end []rune }{[]rune(b.Start), []rune(b.End)})
+	}
+	if len(g.line) > 0 {
+		g.lineComment = string(g.line[0])
+	}
+	if len(g.blocks) > 0 {
+		g.blockStart, g.blockEnd = string(g.blocks[0].start), string(g.blocks[0].end)
 	}
 	for _, s := range doc.Strings {
 		if s.Start == "" || s.End == "" {
