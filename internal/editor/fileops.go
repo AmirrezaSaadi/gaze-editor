@@ -210,6 +210,7 @@ func (e *Editor) setDocumentAs(doc *Document, path, eol, enc string, mode openMo
 	e.applySyntax()
 	// A document was just installed, so this is what the user is editing.
 	e.focusCode()
+	e.refreshMarks()
 	e.loading = false
 	e.refreshChrome()
 	freeMemory(doc.Len())

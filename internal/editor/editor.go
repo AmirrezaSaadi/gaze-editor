@@ -36,6 +36,9 @@ const (
 // Timing and size knobs. These are variables rather than constants so tests can
 // shorten or narrow them without sleeping for seconds.
 var (
+	// findMarkDelay is how long the query has to settle before the scrollbar is
+	// rescanned for marks.
+	findMarkDelay = 200 * time.Millisecond
 	// statusTimeout is how long a status message stays before it clears.
 	statusTimeout = 4 * time.Second
 	// statsDelay is how long typing has to pause before a large buffer's
@@ -122,6 +125,10 @@ type Editor struct {
 	histDraft string
 
 	lastAutosave time.Time
+
+	// marksSeq numbers the scrollbar mark scans, and marksTimer is the pending one.
+	marksSeq   atomic.Uint64
+	marksTimer *time.Timer
 
 	statusSeq   int
 	statusTimer *time.Timer
@@ -229,6 +236,9 @@ func (e *Editor) onCodeChange() {
 	}
 	e.dirty = true
 	e.editSeq++
+	if e.findBar != nil && e.findBar.Visible() {
+		e.refreshMarks()
+	}
 	e.updateStatsForChange()
 	e.updateTitle()
 	e.updateInfo()
@@ -291,13 +301,14 @@ func (e *Editor) buildFindBar() {
 	e.findEntry = widget.NewEntry()
 	e.findEntry.SetPlaceHolder("Find")
 	e.findEntry.OnSubmitted = func(string) { e.FindNext() }
+	e.findEntry.OnChanged = func(string) { e.refreshMarks() }
 
 	e.replEntry = widget.NewEntry()
 	e.replEntry.SetPlaceHolder("Replace")
 	e.replEntry.OnSubmitted = func(string) { e.ReplaceCurrent() }
 
-	e.matchCase = widget.NewCheck("Match case", nil)
-	e.regexCheck = widget.NewCheck("Regex", nil)
+	e.matchCase = widget.NewCheck("Match case", func(bool) { e.refreshMarks() })
+	e.regexCheck = widget.NewCheck("Regex", func(bool) { e.refreshMarks() })
 
 	next := newTipButton("Next", nil, "Find next match (Enter)", e.FindNext)
 	replace := newTipButton("Replace", nil, "Replace the current match", e.ReplaceCurrent)

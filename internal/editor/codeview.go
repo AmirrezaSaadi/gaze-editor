@@ -113,13 +113,18 @@ type codeView struct {
 	// brushes are the boxes drawn behind a matched bracket pair, and the match is
 	// cached on the caret and the edit count because repainting asks every time.
 	brushes [2]*canvas.Rectangle
-	brColor color.NRGBA
-	brValid bool
-	brOK    bool
-	brFrom  pos
-	brTo    pos
-	brCaret pos
-	brSeq   uint64
+	// marks are the document rows that hold a search match, drawn as ticks along
+	// the scrollbar while the find bar is open.
+	marks     []int
+	markRects []*canvas.Rectangle
+	markColor color.NRGBA
+	brColor   color.NRGBA
+	brValid   bool
+	brOK      bool
+	brFrom    pos
+	brTo      pos
+	brCaret   pos
+	brSeq     uint64
 
 	bg        *canvas.Rectangle
 	sels      []*canvas.Rectangle
@@ -139,6 +144,7 @@ func newCodeView(ed *Editor) *codeView {
 		v.brushes[i].CornerRadius = 2
 		v.brushes[i].Hide()
 	}
+	v.markColor = color.NRGBAModel.Convert(theme.Color(theme.ColorNamePrimary)).(color.NRGBA)
 	v.track = canvas.NewRectangle(theme.Color(theme.ColorNameScrollBarBackground))
 	v.track.CornerRadius = 2
 	v.thumb = canvas.NewRectangle(theme.Color(theme.ColorNameScrollBar))
@@ -1682,6 +1688,13 @@ func (r *codeRenderer) Refresh() {
 	v.caretRect.FillColor = th.Color(theme.ColorNamePrimary, variant)
 	v.track.FillColor = th.Color(theme.ColorNameScrollBarBackground, variant)
 	v.thumb.FillColor = th.Color(theme.ColorNameScrollBar, variant)
+	mark := color.NRGBAModel.Convert(th.Color(theme.ColorNamePrimary, variant)).(color.NRGBA)
+	mark.A = 0xCC
+	v.markColor = mark
+	for _, m := range v.markRects {
+		m.FillColor = mark
+		m.Refresh()
+	}
 	// A matched bracket is marked with a soft box, not a coloured glyph: the glyph
 	// belongs to the syntax highlighter.
 	brush := color.NRGBAModel.Convert(th.Color(theme.ColorNamePrimary, variant)).(color.NRGBA)
@@ -1758,7 +1771,11 @@ func (r *codeRenderer) rebuildObjects() {
 			r.objects = append(r.objects, t)
 		}
 	}
-	r.objects = append(r.objects, v.caretRect, v.track, v.thumb)
+	r.objects = append(r.objects, v.caretRect, v.track)
+	for _, m := range v.markRects {
+		r.objects = append(r.objects, m)
+	}
+	r.objects = append(r.objects, v.thumb)
 }
 
 // textCount is how many text objects the view holds. It has to follow the size of
@@ -1886,6 +1903,7 @@ func (r *codeRenderer) sync() {
 	size := v.Size()
 	barW := v.barWidth()
 	trackX := size.Width - barW
+	r.syncMarks(trackX, barW)
 	v.track.Move(fyne.NewPos(trackX, 0))
 	v.track.Resize(fyne.NewSize(barW, size.Height))
 	if v.totalRows() <= vis {
@@ -2001,4 +2019,48 @@ func (r *codeRenderer) syncCaret(lineH, charW, inset float32) {
 	v.caretRect.Show()
 	v.caretRect.Move(fyne.NewPos(x, y))
 	v.caretRect.Resize(fyne.NewSize(caretWidth, lineH))
+}
+
+// markThick is the height of one search tick.
+const markThick = 2
+
+// setMarks records the document rows that hold a search match and redraws.
+func (v *codeView) setMarks(rows []int) {
+	v.marks = rows
+	v.render()
+}
+
+// syncMarks draws one tick per matching line along the scrollbar.
+func (r *codeRenderer) syncMarks(trackX, barW float32) {
+	v := r.v
+	lines := v.docLines()
+	want := len(v.marks)
+	if want > maxFindMarks {
+		want = maxFindMarks
+	}
+	if len(v.markRects) < want {
+		for len(v.markRects) < want {
+			m := canvas.NewRectangle(v.markColor)
+			v.markRects = append(v.markRects, m)
+		}
+		r.rebuildObjects()
+	}
+	height := v.Size().Height
+	for i, m := range v.markRects {
+		if i >= want || lines <= 0 {
+			m.Hide()
+			continue
+		}
+		y := height * float32(v.marks[i]) / float32(lines)
+		if y > height-markThick {
+			y = height - markThick
+		}
+		if y < 0 {
+			y = 0
+		}
+		m.FillColor = v.markColor
+		m.Move(fyne.NewPos(trackX+1, y))
+		m.Resize(fyne.NewSize(barW-2, markThick))
+		m.Show()
+	}
 }

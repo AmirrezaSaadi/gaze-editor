@@ -5,8 +5,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/dialog"
 )
 
@@ -160,6 +162,7 @@ func (m *matcher) replaceAll(text, repl string) (string, int) {
 // ShowFind reveals the find & replace bar and focuses the find field.
 func (e *Editor) ShowFind() {
 	e.findBar.Show()
+	e.refreshMarks()
 	e.histIndex = -1
 	e.win.Canvas().Focus(e.findEntry)
 	e.setStatus("find & replace")
@@ -168,6 +171,7 @@ func (e *Editor) ShowFind() {
 // HideFind hides the find & replace bar and returns focus to the editor.
 func (e *Editor) HideFind() {
 	e.findBar.Hide()
+	e.clearMarks()
 	e.win.Canvas().Focus(e.focusTarget())
 }
 
@@ -392,4 +396,111 @@ func (e *Editor) gotoLineCol(line, col int) {
 	}
 	e.code.gotoLine(line-1, col)
 	e.setStatus(fmt.Sprintf("line %d of %d", line, total))
+}
+
+// Search marks: while the find bar is open the scrollbar shows where the matches
+// are, so a long file can be read at a glance instead of by jumping through it.
+const (
+	// maxFindMarks caps how many ticks are drawn: past this the bar is a solid
+	// stripe and the objects would be spent for nothing.
+	maxFindMarks = 400
+	// findMarkWindow is how many bytes are scanned at a time.
+	findMarkWindow = 64 << 10
+	// findMarkScanBytes bounds how much of a file is scanned for marks, so a rare
+	// query in a huge buffer cannot make the bar cost a full read.
+	findMarkScanBytes = 32 << 20
+)
+
+// refreshMarks rescans the document for the current query in the background and
+// hands the matching lines to the code view. It runs from the UI goroutine, reads
+// everything it needs from the widgets there, and drops its result if a newer query
+// has arrived meanwhile.
+func (e *Editor) refreshMarks() {
+	if e.code == nil || e.doc == nil || e.findBar == nil || !e.findBar.Visible() {
+		return
+	}
+	seq := e.marksSeq.Add(1)
+	if e.marksTimer != nil {
+		e.marksTimer.Stop()
+	}
+	query := e.findEntry.Text
+	regex := e.regexCheck.Checked
+	matchCase := e.matchCase.Checked
+	if query == "" {
+		e.code.setMarks(nil)
+		return
+	}
+	// The snapshot holds the page table, so the scan reads stable text while the
+	// window keeps being edited, and needs no line index of its own.
+	snap := e.doc.Snapshot()
+	e.marksTimer = time.AfterFunc(findMarkDelay, func() {
+		m, err := newMatcher(query, regex, matchCase)
+		if err != nil {
+			return // the status line already reports a bad pattern
+		}
+		rows := findMarkLines(snap, m)
+		fyne.Do(func() {
+			if e.marksSeq.Load() != seq || e.code == nil {
+				return
+			}
+			e.code.setMarks(rows)
+		})
+	})
+}
+
+// clearMarks takes the marks off the scrollbar.
+func (e *Editor) clearMarks() {
+	e.marksSeq.Add(1)
+	if e.marksTimer != nil {
+		e.marksTimer.Stop()
+	}
+	if e.code != nil {
+		e.code.setMarks(nil)
+	}
+}
+
+// findMarkLines returns the document rows that hold a match, at most maxFindMarks of
+// them. It walks the pages a window at a time and counts the newlines it passes, so
+// neither a copy of the text nor a line index is needed. A match that straddles a
+// window boundary is not seen; an overview is not a search.
+func findMarkLines(snap *Document, m *matcher) []int {
+	if snap == nil {
+		return nil
+	}
+	var rows []int
+	scanned, line := 0, 0
+	for _, page := range snap.pages {
+		for off := 0; off < len(page); off += findMarkWindow {
+			if len(rows) >= maxFindMarks || scanned >= findMarkScanBytes {
+				return rows
+			}
+			end := off + findMarkWindow
+			if end > len(page) {
+				end = len(page)
+			}
+			window := page[off:end]
+			scanned += len(window)
+			prev := 0
+			for from := 0; ; {
+				start, size, ok := m.next(window, from)
+				if !ok {
+					break
+				}
+				line += strings.Count(window[prev:start], "\n")
+				prev = start
+				if n := len(rows); n == 0 || rows[n-1] != line {
+					rows = append(rows, line)
+					if len(rows) >= maxFindMarks {
+						break
+					}
+				}
+				if size == 0 {
+					size = 1
+				}
+				from = start + size
+			}
+			line += strings.Count(window[prev:], "\n")
+		}
+	}
+	return rows
 }
