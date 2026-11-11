@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -357,4 +358,113 @@ func (v *codeView) replaceBlock(first, start int, text, out string, deltas []int
 	v.ed.onCodeChange()
 	v.ed.updateInfo()
 	v.render()
+}
+
+// blockText returns the rows a whole-line command covers, the byte range they came
+// from, and their text. The last newline is kept apart: it starts the next line
+// rather than belonging to a line of the block.
+func (v *codeView) blockText() (first, start int, text string, lines []string, ok bool) {
+	first, last, ok := v.lineBlock()
+	if !ok {
+		return 0, 0, "", nil, false
+	}
+	start, end := v.doc.LineStart(first), v.doc.LineStart(last+1)
+	text = v.doc.TextRange(start, end)
+	if text == "" {
+		return 0, 0, "", nil, false
+	}
+	lines = strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	return first, start, text, lines, true
+}
+
+// writeBlock replaces a block of lines as one undoable edit, keeping the caret on
+// its own line when that line still exists.
+func (v *codeView) writeBlock(first, start int, old string, lines []string) {
+	out := strings.Join(lines, "\n")
+	if strings.HasSuffix(old, "\n") {
+		out += "\n"
+	}
+	if out == old {
+		return
+	}
+	v.rawEdit(start, old, out)
+	v.caret = v.clampPos(v.caret)
+	v.anchor = v.clampPos(v.anchor)
+	v.followCaret()
+	v.ed.onCodeChange()
+	v.ed.updateInfo()
+	v.render()
+}
+
+// sortLines sorts the selected lines, or the caret's line block, in byte order.
+func (v *codeView) sortLines(reverse bool) bool {
+	first, start, old, lines, ok := v.blockText()
+	if !ok || len(lines) < 2 {
+		return false
+	}
+	sort.SliceStable(lines, func(i, j int) bool {
+		if reverse {
+			return lines[i] > lines[j]
+		}
+		return lines[i] < lines[j]
+	})
+	v.writeBlock(first, start, old, lines)
+	return true
+}
+
+// dedupeLines drops repeated lines from the block, keeping the first of each.
+func (v *codeView) dedupeLines() bool {
+	first, start, old, lines, ok := v.blockText()
+	if !ok || len(lines) < 2 {
+		return false
+	}
+	seen := make(map[string]bool, len(lines))
+	kept := lines[:0]
+	for _, ln := range lines {
+		if seen[ln] {
+			continue
+		}
+		seen[ln] = true
+		kept = append(kept, ln)
+	}
+	if len(kept) == len(lines) {
+		return false
+	}
+	v.writeBlock(first, start, old, kept)
+	return true
+}
+
+// changeCase upper or lower cases the selection, or the caret's line when nothing
+// is selected.
+func (v *codeView) changeCase(upper bool) bool {
+	convert := strings.ToLower
+	if upper {
+		convert = strings.ToUpper
+	}
+	if from, to, ok := v.selRange(); ok {
+		start, end := v.offset(from), v.offset(to)
+		text := v.doc.TextRange(start, end)
+		out := convert(text)
+		if out == text {
+			return false
+		}
+		v.rawEdit(start, text, out)
+		// The selection keeps its shape: almost every case mapping keeps the text
+		// length, and the ends are clamped in case one does not.
+		v.caret, v.anchor = v.clampPos(v.caret), v.clampPos(v.anchor)
+		v.followCaret()
+		v.ed.onCodeChange()
+		v.ed.updateInfo()
+		v.render()
+		return true
+	}
+	row := v.caret.row
+	line := v.doc.LineText(row)
+	out := convert(line)
+	if out == line {
+		return false
+	}
+	off := v.doc.LineStart(row)
+	v.editAt(off, line, out, off+runeByteOffset(out, v.caret.col))
+	return true
 }

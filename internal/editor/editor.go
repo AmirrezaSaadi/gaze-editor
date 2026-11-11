@@ -390,6 +390,12 @@ func (e *Editor) buildMenus() {
 		accel("Move Line Down", fyne.KeyDown, fyne.KeyModifierControl|fyne.KeyModifierShift, e.MoveLineDown),
 		accel("Duplicate Line", fyne.KeyD, fyne.KeyModifierControl|fyne.KeyModifierShift, e.DuplicateLine),
 		accel("Toggle Comment", fyne.KeySlash, fyne.KeyModifierControl, e.ToggleComment),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Sort Lines", e.SortLines),
+		fyne.NewMenuItem("Sort Lines Descending", func() { e.sortLines(true) }),
+		fyne.NewMenuItem("Remove Duplicate Lines", e.RemoveDuplicateLines),
+		fyne.NewMenuItem("Uppercase", e.Uppercase),
+		fyne.NewMenuItem("Lowercase", e.Lowercase),
 	)
 
 	e.wrapItem = fyne.NewMenuItem("Word Wrap", e.ToggleWrap)
@@ -794,6 +800,36 @@ func (e *Editor) ToggleComment() {
 	}
 	if !e.code.toggleComment(g.lineComment, g.blockStart, g.blockEnd) {
 		e.setStatus("nothing to comment")
+	}
+}
+
+// SortLines sorts the selected lines, or the caret's line block, in order.
+func (e *Editor) SortLines() { e.sortLines(false) }
+
+func (e *Editor) sortLines(reverse bool) {
+	if e.code == nil || !e.code.sortLines(reverse) {
+		e.setStatus("nothing to sort")
+	}
+}
+
+// RemoveDuplicateLines drops repeated lines from the selection, keeping the first.
+func (e *Editor) RemoveDuplicateLines() {
+	if e.code == nil || !e.code.dedupeLines() {
+		e.setStatus("no duplicate lines")
+	}
+}
+
+// Uppercase upper cases the selection, or the caret's line.
+func (e *Editor) Uppercase() {
+	if e.code == nil || !e.code.changeCase(true) {
+		e.setStatus("nothing to change")
+	}
+}
+
+// Lowercase lower cases the selection, or the caret's line.
+func (e *Editor) Lowercase() {
+	if e.code == nil || !e.code.changeCase(false) {
+		e.setStatus("nothing to change")
 	}
 }
 

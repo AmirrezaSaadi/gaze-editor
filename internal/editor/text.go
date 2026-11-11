@@ -241,7 +241,10 @@ func detectIndent(text string) (useTabs bool, width int) {
 			continue // unindented or blank line
 		}
 		if line[0] == '\t' {
-			return true, 1
+			// A level is one tab, but a tab is still drawn as a tab stop rather than
+			// one cell, or tab-indented code would look flat next to the same code
+			// indented with spaces.
+			return true, 4
 		}
 		if i > 16 {
 			i = 16

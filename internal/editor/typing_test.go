@@ -304,3 +304,120 @@ func TestEnterInABigBuffer(t *testing.T) {
 		t.Fatalf("the new line is %d runes wide, want 9", got)
 	}
 }
+
+// A tab is drawn as a tab stop rather than one cell, so tab-indented code lines up
+// with the same code indented with spaces.
+func TestTabDisplayWidth(t *testing.T) {
+	if useTabs, width := detectIndent("\tx\n"); !useTabs || width != 4 {
+		t.Fatalf("detectIndent for a tab = %v,%d, want tabs at 4 cells", useTabs, width)
+	}
+	e := newTestEditor(t)
+	setBuffer(e, "\tx\n")
+	e.indentUseTabs, e.indentWidth = true, 4
+	v := e.code
+	if got := v.cellOf(pos{row: 0, col: 1}); got != 4 {
+		t.Fatalf("the text after a tab is at cell %d, want 4", got)
+	}
+	if got := v.cellOf(pos{row: 0, col: 2}); got != 5 {
+		t.Fatalf("the second character is at cell %d, want 5", got)
+	}
+	// A click four cells in lands after the tab, not on the next character.
+	if got := v.colAtCell(0, 4); got != 1 {
+		t.Fatalf("a click at cell 4 gives column %d, want 1", got)
+	}
+}
+
+// Sorting and deduplication work on the selected lines as one undo step.
+func TestSortLines(t *testing.T) {
+	e := newTestEditor(t)
+	setBuffer(e, "pear\napple\nfig\n")
+	v := e.code
+	v.anchor = pos{row: 0, col: 0}
+	v.caret = pos{row: 2, col: 3}
+	e.SortLines()
+	if got := e.text(); got != "apple\nfig\npear\n" {
+		t.Fatalf("buffer = %q", got)
+	}
+	v.Undo()
+	if got := e.text(); got != "pear\napple\nfig\n" {
+		t.Fatalf("after undo: %q", got)
+	}
+	v.Redo()
+	v.anchor = pos{row: 0, col: 0}
+	v.caret = pos{row: 2, col: 4}
+	e.sortLines(true)
+	if got := e.text(); got != "pear\nfig\napple\n" {
+		t.Fatalf("descending: %q", got)
+	}
+}
+
+func TestRemoveDuplicateLines(t *testing.T) {
+	e := newTestEditor(t)
+	setBuffer(e, "a\nb\na\nc\nb\n")
+	v := e.code
+	v.anchor = pos{row: 0, col: 0}
+	v.caret = pos{row: 4, col: 1}
+	e.RemoveDuplicateLines()
+	if got := e.text(); got != "a\nb\nc\n" {
+		t.Fatalf("buffer = %q", got)
+	}
+	v.Undo()
+	if got := e.text(); got != "a\nb\na\nc\nb\n" {
+		t.Fatalf("after undo: %q", got)
+	}
+	// Nothing to remove is reported, not a silent rewrite.
+	e.RemoveDuplicateLines()
+	e.status.SetText("")
+	e.RemoveDuplicateLines()
+	if !strings.Contains(e.status.Text, "no duplicate") {
+		t.Fatalf("status = %q", e.status.Text)
+	}
+}
+
+// Case changes work on the selection, or on the caret's line.
+func TestChangeCase(t *testing.T) {
+	e := newTestEditor(t)
+	setBuffer(e, "hello World\nsecond line\n")
+	v := e.code
+	v.anchor = pos{row: 0, col: 0}
+	v.caret = pos{row: 0, col: 5}
+	e.Uppercase()
+	if got := e.text(); got != "HELLO World\nsecond line\n" {
+		t.Fatalf("buffer = %q", got)
+	}
+	if v.anchor != (pos{row: 0, col: 0}) || v.caret != (pos{row: 0, col: 5}) {
+		t.Fatalf("selection = %v..%v, want it unchanged", v.anchor, v.caret)
+	}
+	v.clearSelection()
+	v.setCaret(pos{row: 1, col: 3})
+	e.Uppercase()
+	if got := e.text(); got != "HELLO World\nSECOND LINE\n" {
+		t.Fatalf("buffer after upper casing the line = %q", got)
+	}
+	if caretAt(e) != "1:3" {
+		t.Fatalf("caret at %s, want 1:3", caretAt(e))
+	}
+	e.Lowercase()
+	if got := e.text(); got != "HELLO World\nsecond line\n" {
+		t.Fatalf("buffer after lower casing = %q", got)
+	}
+}
+
+// The line commands say so when they have nothing to do.
+func TestLineOpsNothingToDo(t *testing.T) {
+	e := newTestEditor(t)
+	setBuffer(e, "one\n")
+	e.SortLines()
+	if !strings.Contains(e.status.Text, "nothing to sort") {
+		t.Fatalf("status = %q", e.status.Text)
+	}
+	e.Uppercase() // "one" -> "ONE" is a change, so this must work
+	if got := e.text(); got != "ONE\n" {
+		t.Fatalf("buffer = %q", got)
+	}
+	e.status.SetText("")
+	e.Uppercase() // already upper case: nothing to do
+	if !strings.Contains(e.status.Text, "nothing to change") {
+		t.Fatalf("status = %q", e.status.Text)
+	}
+}
