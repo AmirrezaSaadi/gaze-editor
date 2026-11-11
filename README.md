@@ -51,7 +51,9 @@ day-to-day features you actually reach for — no plugin system, no bloat.
 - **Recent files** — persisted list (max 10) under *File → Open Recent*
 - **Find & replace** — next with wrap-around, match-case, **regex** (with `$1`
   capture groups), and a persisted **search history** (`Alt+Up` / `Alt+Down`);
-  works across a whole large file, not just the visible window
+  works across a whole large file, not just the visible window, and while the bar
+  is open the scrollbar carries a tick per matching line, so you can see where a
+  query lives in the file without jumping through it
 - **Go to line** — jump straight to a line number, or `file:line:col` on the CLI
 - **Smart typing** — a break keeps the indentation of the line it starts on, opens
   a level after `{`, `(`, `[` or a block colon, and pushes a bracket that sat at the
@@ -68,7 +70,8 @@ day-to-day features you actually reach for — no plugin system, no bloat.
   line, and takes the comments off again; the delimiters come from the language
   definition, so a language without line comments gets its block comment instead
 - **Line operations** — indent/outdent, move line up/down, duplicate line, toggle
-  comment
+  comment, sort a block of lines (either way), remove duplicate lines, and change
+  the case of the selection or the caret's line
 - **Trim trailing whitespace on save** (optional, persisted)
 - **Line-ending aware** — CRLF/CR files are normalised for editing and restored
   on save; the convention is shown in the status bar

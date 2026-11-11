@@ -11,6 +11,39 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.11.1] - 2026-11-10
+
+Marks on the scrollbar, block transforms, and a tab that looks like a tab.
+
+### Added
+
+- **Search marks** — while the find bar is open, the scrollbar carries one tick per
+  line that holds a match. The scan runs in the background a moment after the query
+  settles, on the same page snapshot the save path uses, so it reads stable text
+  while the window keeps being edited and needs no line index of its own: it walks
+  the pages a window at a time and counts the newlines it passes. It stops at 400
+  marks and 32 MB scanned, a stale result is dropped when a newer query arrives, and
+  closing the bar takes the ticks away.
+- **Block transforms** (Edit menu) — Sort Lines, Sort Lines Descending, Remove
+  Duplicate Lines (keeping the first of each), Uppercase and Lowercase. They work on
+  the selected lines, or the caret's line, as one undo step, and say so when there is
+  nothing to do instead of rewriting the buffer with the same text.
+
+### Fixed
+
+- **Tab-indented files drew a tab one cell wide.** `detectIndent` reports tabs with a
+  width, and that width doubles as the tab stop, so a level of a tab-indented file
+  rendered as a single space: such code looked flatter than the same code indented
+  with spaces, and a click in the margin landed on the next character instead of
+  after the tab. A level is still one tab, but it is now a tab stop of four cells.
+
+### Tests
+
+- `marks_test.go`: the rows that hold a match, the mark cap, windows, the ticks being
+  drawn in order inside the bar, following edits, an empty query, a bad regex;
+  `typing_test.go`: the tab stop, sorting, deduplication (and undo), case changes on
+  a selection and on a line, and the "nothing to do" messages.
+
 ## [1.11.0] - 2026-11-10
 
 Typing that knows about code, and comments you can toggle.
