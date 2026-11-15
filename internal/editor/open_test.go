@@ -192,7 +192,9 @@ func TestOpenInBackgroundIsSuperseded(t *testing.T) {
 }
 
 // Typing while a big file loads must not be thrown away silently.
-func TestOpenInBackgroundAsksAboutEditsMadeMeanwhile(t *testing.T) {
+// A file that finishes loading while the user is typing into another buffer gets
+// its own tab: the edits are not in the way of it, and nothing has to be confirmed.
+func TestOpenWhileEditingLeavesTheBufferAlone(t *testing.T) {
 	e := newTestEditor(t)
 	e.SetContent("start", "")
 	slow := paced(strings.Repeat("new\n", 4096), 128, time.Millisecond)
@@ -201,12 +203,23 @@ func TestOpenInBackgroundAsksAboutEditsMadeMeanwhile(t *testing.T) {
 	e.startOpenReader(path, "big.txt", slow, int64(len(slow.data)), openLarge, nil)
 	test.Type(e.code, "edited ")
 
-	waitFor(t, "the prompt", func() bool { return e.win.Canvas().Overlays().Top() != nil })
-	if got := e.text(); !strings.HasPrefix(got, "edited ") {
-		t.Fatalf("buffer = %q, want the typing kept while the question is open", got)
+	waitFor(t, "the open to finish", func() bool { return e.currentFile == path })
+	if got := e.win.Canvas().Overlays().Top(); got != nil {
+		t.Fatal("nothing should have been asked about the buffer being edited")
 	}
-	if e.currentFile == path {
-		t.Fatal("the file was installed without asking")
+	if e.TabCount() != 2 {
+		t.Fatalf("%d tabs, want the edited buffer and the file", e.TabCount())
+	}
+	// The edited buffer is still there, unchanged, one tab away.
+	e.PrevTab()
+	if got := e.text(); got != "edited start" {
+		t.Fatalf("the edited buffer = %q", got)
+	}
+	if !e.IsDirty() {
+		t.Fatal("the edited buffer is no longer dirty")
+	}
+	if paths := e.TabPaths(); paths[0] != "" || paths[1] != path {
+		t.Fatalf("tabs = %v", paths)
 	}
 }
 

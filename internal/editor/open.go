@@ -11,7 +11,6 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
 )
 
 // Opening a big file means reading hundreds of megabytes and indexing every line.
@@ -77,6 +76,16 @@ func (p *progressReader) Read(b []byte) (int, error) {
 // mapped or read in the background; anything else is read inline.
 func (e *Editor) startOpen(path string, mode openMode, after func()) {
 	name := filepath.Base(path)
+	// A file that is already open is not read again: its tab is shown, which is
+	// instant and keeps the edits and the caret it has.
+	if i := e.tabFor(path); i >= 0 {
+		e.activate(i)
+		e.setStatus("showing " + name)
+		if after != nil {
+			after()
+		}
+		return
+	}
 	seq := e.loadSeq.Add(1) // any load still in flight is now stale
 
 	if mode.large() {
@@ -136,7 +145,7 @@ func (e *Editor) readInline(seq uint64, path, name string, body io.Reader, size 
 		return
 	}
 	e.hideLoadBar()
-	e.installWhenIdle(seq, e.editSeq, path, doc, eol, enc, mode, docIndex{}, after)
+	e.installDocument(path, doc, eol, enc, mode, docIndex{}, after)
 }
 
 // beginLoad marks the start of a background open: the status line names the file
@@ -182,7 +191,7 @@ func (e *Editor) prepare(st *loadState, doc *Document) docIndex {
 
 // deliver installs a document prepared on a background goroutine, unless a newer
 // open has taken over in the meantime.
-func (e *Editor) deliver(st *loadState, editsAtRequest uint64, path string, doc *Document, eol, enc string, err error, mode openMode, ix docIndex, after func()) {
+func (e *Editor) deliver(st *loadState, path string, doc *Document, eol, enc string, err error, mode openMode, ix docIndex, after func()) {
 	fyne.Do(func() {
 		e.end(st)
 		if e.loadSeq.Load() != st.seq {
@@ -195,7 +204,7 @@ func (e *Editor) deliver(st *loadState, editsAtRequest uint64, path string, doc 
 			e.reportOpenError(err, st.name)
 			return
 		}
-		e.installWhenIdle(st.seq, editsAtRequest, path, doc, eol, enc, mode, ix, after)
+		e.installDocument(path, doc, eol, enc, mode, ix, after)
 	})
 }
 
@@ -203,7 +212,6 @@ func (e *Editor) deliver(st *loadState, editsAtRequest uint64, path string, doc 
 // the document's pages are views of the mapping, so the work is the two passes
 // over the bytes that check them and record the line starts.
 func (e *Editor) scanInBackground(seq uint64, path, name string, region []byte, size int64, mode openMode, after func()) {
-	editsAtRequest := e.editSeq
 	st := e.beginLoad(seq, name, size)
 
 	go func() {
@@ -214,31 +222,30 @@ func (e *Editor) scanInBackground(seq uint64, path, name string, region []byte, 
 			unmapFile(region)
 			f, err := os.Open(path)
 			if err != nil {
-				e.deliver(st, editsAtRequest, path, nil, "", "", err, mode, docIndex{}, after)
+				e.deliver(st, path, nil, "", "", err, mode, docIndex{}, after)
 				return
 			}
-			e.readStream(st, editsAtRequest, path, f, mode, after)
+			e.readStream(st, path, f, mode, after)
 			return
 		}
 		e.report(st, size/3)
 		doc := indexMapped(region)
 		e.report(st, size*2/3)
 		ix := e.prepare(st, doc)
-		e.deliver(st, editsAtRequest, path, doc, eolLF, encUTF8, nil, mode, ix, after)
+		e.deliver(st, path, doc, eolLF, encUTF8, nil, mode, ix, after)
 	}()
 }
 
 // readInBackground streams a large file on its own goroutine and installs it when
 // the read is done, unless a newer open has taken over in the meantime.
 func (e *Editor) readInBackground(seq uint64, path, name string, body io.ReadCloser, size int64, mode openMode, after func()) {
-	editsAtRequest := e.editSeq
 	st := e.beginLoad(seq, name, size)
-	go e.readStream(st, editsAtRequest, path, body, mode, after)
+	go e.readStream(st, path, body, mode, after)
 }
 
 // readStream copies a file into a document, normalising and checking it as it
 // goes, and reports progress as it reads.
-func (e *Editor) readStream(st *loadState, editsAtRequest uint64, path string, body io.ReadCloser, mode openMode, after func()) {
+func (e *Editor) readStream(st *loadState, path string, body io.ReadCloser, mode openMode, after func()) {
 	defer body.Close()
 	pr := &progressReader{
 		r:      &limitReader{r: body, limit: MaxOpenBytes},
@@ -249,7 +256,7 @@ func (e *Editor) readStream(st *loadState, editsAtRequest uint64, path string, b
 	}
 	doc, eol, enc, err := openDocument(pr)
 	ix := e.prepare(st, doc)
-	e.deliver(st, editsAtRequest, path, doc, eol, enc, err, mode, ix, after)
+	e.deliver(st, path, doc, eol, enc, err, mode, ix, after)
 }
 
 // showLoadBar puts the progress bar at the left of the status row.
@@ -292,31 +299,9 @@ func (e *Editor) loadBarShown() bool {
 	return e.loadSlot != nil && len(e.loadSlot.Objects) > 0
 }
 
-// installWhenIdle installs a loaded document, first asking when the buffer was
-// edited while it was loading: the synchronous open used to make that impossible,
-// and nobody expects their typing to vanish.
-func (e *Editor) installWhenIdle(seq, editsAtRequest uint64, path string, doc *Document, eol, enc string, mode openMode, ix docIndex, after func()) {
-	if e.dirty && e.editSeq != editsAtRequest {
-		name := filepath.Base(path)
-		dialog.ShowConfirm("Changes made while opening",
-			name+" finished loading, but this buffer has changes you made while it was being read.\n\n"+
-				"Discard them and show "+name+"?",
-			func(ok bool) {
-				if e.loadSeq.Load() != seq {
-					return
-				}
-				if !ok {
-					e.setStatus("open cancelled — " + name)
-					return
-				}
-				e.installDocument(path, doc, eol, enc, mode, ix, after)
-			}, e.win)
-		return
-	}
-	e.installDocument(path, doc, eol, enc, mode, ix, after)
-}
+// installDocument hands a finished read to the editor. The buffer that was being
+// edited keeps its tab, so an open never interrupts it.
 
-// installDocument puts a freshly read document in the buffer and runs after.
 func (e *Editor) installDocument(path string, doc *Document, eol, enc string, mode openMode, ix docIndex, after func()) {
 	e.loadDocumentAs(path, doc, eol, enc, mode, ix, after)
 }

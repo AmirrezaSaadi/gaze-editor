@@ -537,7 +537,7 @@ func TestCodeViewTabs(t *testing.T) {
 func TestCodeViewSessionCaret(t *testing.T) {
 	e, _ := openCode(t, codeText(5000))
 	e.gotoLineCol(3000, 4)
-	e.saveSession(e.currentFile)
+	e.saveSession()
 
 	prefs := e.app.Preferences()
 	if got, want := prefs.IntWithFallback(prefLastRow, -1), 2999; got != want {

@@ -179,60 +179,30 @@ func (e *Editor) setContentAs(text, path, enc string, mode openMode) {
 }
 
 // setDocumentAs installs an already-built document, which is how a file that was
-// streamed in (rather than read into a string) reaches the editor.
+// streamed in (rather than read into a string) reaches the editor. It becomes its
+// own tab, or takes the place of the empty buffer of a fresh window.
 func (e *Editor) setDocumentAs(doc *Document, path, eol, enc string, mode openMode, ix docIndex) {
-	e.eol = eol
-	e.enc = enc
-	if e.enc == "" {
-		e.enc = encUTF8
+	t := &tab{doc: doc, path: path, eol: eol, enc: enc, large: mode.large()}
+	if t.eol == "" {
+		t.eol = eolLF
+	}
+	if t.enc == "" {
+		t.enc = encUTF8
 	}
 	// The indent style is settled by the first indented line, so only the head of
 	// the document is looked at.
-	e.indentUseTabs, e.indentWidth = detectIndent(doc.TextRange(0, indentScanLimit))
-
-	// Every file lives in a document; the open mode only decides which chrome is
-	// worth keeping (counts, snapshots, the save-time trim).
-	e.largeFile = mode.large()
-	e.editSeq++ // a new document invalidates any save request still in flight
-	// The counts on screen belong to the previous document; drop them until this
-	// one has been counted.
-	e.statsKnown = false
-	e.loading = true
-	e.doc = doc
-	e.resetUndo()
-	e.currentFile = path
-	e.dirty = false
-	e.applyWrap()
-	e.code.setDocRows(e.doc, ix)
-	// The language follows the file name, so a freshly opened document may need a
-	// different one (or none at all).
-	e.lang = e.detectLanguage()
-	e.applySyntax()
-	// A document was just installed, so this is what the user is editing.
-	e.focusCode()
-	e.refreshMarks()
-	e.loading = false
-	e.refreshChrome()
-	freeMemory(doc.Len())
-}
-
-// confirmDiscard runs proceed immediately, or first asks the user to confirm
-// discarding unsaved changes.
-func (e *Editor) confirmDiscard(proceed func()) {
-	if !e.dirty {
-		proceed()
-		return
+	t.useTabs, t.width = detectIndent(doc.TextRange(0, indentScanLimit))
+	if t.width <= 0 {
+		t.width = 4
 	}
-	dialog.ShowConfirm("Unsaved changes",
-		"The current file has unsaved changes.\nDiscard them and continue?",
-		func(ok bool) {
-			defer e.focusCode()
-			if !ok {
-				return
-			}
-			e.discardChanges()
-			proceed()
-		}, e.win)
+	// The language follows the file name.
+	t.lang = grammarFor(path, e.languages())
+	// What the file looked like when it was read, so a later save can tell whether
+	// another program changed it underneath us.
+	t.diskPath, t.diskMod, t.diskSize, t.diskKnown = diskStateOf(path)
+	t.view = viewState{rows: ix.rows, rowsCells: ix.cells}
+	e.addTab(t)
+	freeMemory(doc.Len())
 }
 
 // discardChanges drops the recovery snapshot belonging to the buffer that is
@@ -244,49 +214,45 @@ func (e *Editor) discardChanges() {
 
 // NewFile clears the buffer and detaches the backing path.
 func (e *Editor) NewFile() {
-	e.confirmDiscard(func() {
-		e.SetContent("", "")
-		e.setStatus("new file — unsaved")
-	})
+	e.addUntitled()
+	e.setStatus("new file — unsaved")
 }
 
-// OpenFile shows the native open dialog and loads the chosen file.
+// OpenFile shows the native open dialog and loads the chosen file into its own tab.
 func (e *Editor) OpenFile() {
-	e.confirmDiscard(func() {
-		d := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
-			defer e.focusCode()
-			if err != nil {
-				dialog.ShowError(err, e.win)
-				return
-			}
-			if r == nil {
-				return // cancelled
-			}
+	d := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
+		defer e.focusCode()
+		if err != nil {
+			dialog.ShowError(err, e.win)
+			return
+		}
+		if r == nil {
+			return // cancelled
+		}
 
-			path := r.URI().Path()
-			name := filepath.Base(path)
-			if path == "" {
-				name = r.URI().Name()
-			}
-			// The dialog gives a reader, not a size. A file URI can be
-			// stat'ed; anything else (a portal URI, say) is treated as small
-			// and left to the limitReader below.
-			var size int64
-			if fi, serr := os.Stat(path); serr == nil {
-				size = fi.Size()
-			}
+		path := r.URI().Path()
+		name := filepath.Base(path)
+		if path == "" {
+			name = r.URI().Name()
+		}
+		// The dialog gives a reader, not a size. A file URI can be stat'ed;
+		// anything else (a portal URI, say) is treated as small and left to the
+		// limitReader below.
+		var size int64
+		if fi, serr := os.Stat(path); serr == nil {
+			size = fi.Size()
+		}
 
-			e.confirmOpenSize(name, size, func(mode openMode) {
-				e.startOpenReader(path, name, r, size, mode, nil)
-			})
-		}, e.win)
-		d.Show()
-	})
+		e.confirmOpenSize(name, size, func(mode openMode) {
+			e.startOpenReader(path, name, r, size, mode, nil)
+		})
+	}, e.win)
+	d.Show()
 }
 
 // OpenRecent loads a file previously opened from the recent-files list.
 func (e *Editor) OpenRecent(path string) {
-	e.confirmDiscard(func() { e.OpenPath(path) })
+	e.OpenPath(path)
 }
 
 // OpenPath loads path directly, reporting any error in the UI.
@@ -356,7 +322,6 @@ func (e *Editor) loadContentAs(path, text, enc string, mode openMode) {
 // runs once the buffer really holds the document — including the case where a
 // recovery snapshot was offered first.
 func (e *Editor) loadDocumentAs(path string, doc *Document, eol, enc string, mode openMode, ix docIndex, after func()) {
-	e.recordDiskState(path)
 	suffix := ""
 	if mode.large() {
 		suffix = " — large-file mode"
@@ -570,9 +535,10 @@ func (e *Editor) finishSave(req saveRequest, trimmed string) {
 	e.currentFile = req.path
 	e.dirty = !sameBuffer
 	e.recordDiskState(req.path)
+	e.saveActive() // the tab follows the file it was just saved as
 	e.refreshChrome()
 	e.addRecent(req.path)
-	e.saveSession(req.path)
+	e.saveSession()
 	clearRecovery(req.path)
 	if sameBuffer {
 		// The buffer is what was written, so any older snapshot (a draft or a
@@ -611,15 +577,20 @@ func (e *Editor) adoptTrimmed(trimmed string) {
 // recordDiskState remembers the on-disk identity of path so a later save can
 // tell whether another program changed the file underneath us.
 func (e *Editor) recordDiskState(path string) {
-	e.diskPath, e.diskMod, e.diskSize, e.diskKnown = "", time.Time{}, 0, false
+	e.diskPath, e.diskMod, e.diskSize, e.diskKnown = diskStateOf(path)
+}
+
+// diskStateOf reads the on-disk identity of a file: its path, modification time and
+// size, and whether any of it could be read at all.
+func diskStateOf(path string) (string, time.Time, int64, bool) {
 	if path == "" {
-		return
+		return "", time.Time{}, 0, false
 	}
 	fi, err := os.Stat(path)
 	if err != nil {
-		return
+		return "", time.Time{}, 0, false
 	}
-	e.diskPath, e.diskMod, e.diskSize, e.diskKnown = path, fi.ModTime(), fi.Size(), true
+	return path, fi.ModTime(), fi.Size(), true
 }
 
 // externalChange reports whether path was modified by someone else since Gaze
@@ -798,7 +769,8 @@ func (e *Editor) refreshRecentMenu() {
 }
 
 // saveSession records the file and caret for the next launch.
-func (e *Editor) saveSession(path string) {
+func (e *Editor) saveSession() {
+	path := e.currentFile
 	if path == "" {
 		return
 	}
@@ -850,15 +822,30 @@ func (e *Editor) onDropped(_ fyne.Position, uris []fyne.URI) {
 // Quit persists the session and window geometry, then closes the app, prompting
 // first if there are unsaved changes.
 func (e *Editor) Quit() {
-	e.confirmDiscard(func() {
-		// A background open may still be reading: abandon it rather than let it
-		// install a document into a window that is going away.
-		e.loadSeq.Add(1)
-		e.saveSession(e.currentFile)
-		e.saveGeometry()
-		e.stopTimers()
-		e.app.Quit()
-	})
+	if len(e.tabs) > 0 {
+		e.saveActive() // the edits of the buffer being edited are still in the window
+	}
+	if names := e.dirtyTabs(); len(names) > 0 {
+		dialog.ShowConfirm("Unsaved changes", quitMessage(names), func(ok bool) {
+			if ok {
+				e.quitNow()
+			}
+			e.focusCode()
+		}, e.win)
+		return
+	}
+	e.quitNow()
+}
+
+// quitNow abandons anything still loading and closes the app.
+func (e *Editor) quitNow() {
+	// A background open may still be reading: abandon it rather than let it
+	// install a document into a window that is going away.
+	e.loadSeq.Add(1)
+	e.saveSession()
+	e.saveGeometry()
+	e.stopTimers()
+	e.app.Quit()
 }
 
 func (e *Editor) saveGeometry() {

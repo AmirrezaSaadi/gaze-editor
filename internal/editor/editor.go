@@ -70,6 +70,11 @@ type Editor struct {
 	code *codeView
 	doc  *Document
 
+	// tabs are the open buffers, and active is the one whose state the fields of
+	// this struct describe. The state of the others is stashed in their tab.
+	tabs   []*tab
+	active int
+
 	editSeq    uint64
 	statsKnown bool // whether the word/character counts are current
 
@@ -262,6 +267,7 @@ func (e *Editor) BuildUI() {
 		e.doc = NewDocument("")
 		e.code.setDoc(e.doc)
 	}
+	e.tabsInit()
 	e.buildFindBar()
 	e.buildTipLayer()
 	e.buildMenus()
@@ -379,6 +385,10 @@ func (e *Editor) buildMenus() {
 		fyne.NewMenuItemSeparator(),
 		accel("Save", fyne.KeyS, fyne.KeyModifierControl, e.SaveFile),
 		accel("Save As…", fyne.KeyS, fyne.KeyModifierControl|fyne.KeyModifierShift, e.SaveAsFile),
+		fyne.NewMenuItemSeparator(),
+		accel("Close Tab", fyne.KeyW, fyne.KeyModifierControl, e.CloseTab),
+		accel("Next Tab", fyne.KeyTab, fyne.KeyModifierControl, e.NextTab),
+		accel("Previous Tab", fyne.KeyTab, fyne.KeyModifierControl|fyne.KeyModifierShift, e.PrevTab),
 		fyne.NewMenuItemSeparator(),
 		accel("Quit", fyne.KeyQ, fyne.KeyModifierControl, e.Quit),
 	)
@@ -536,6 +546,9 @@ func (e *Editor) updateTitle() {
 	mark := ""
 	if e.dirty {
 		mark = " •"
+	}
+	if n := len(e.tabs); n > 1 {
+		name = fmt.Sprintf("%s (%d/%d)", name, e.active+1, n)
 	}
 	title := appTitle + " — " + name + mark
 	// Setting the same title again makes the window do nothing useful, and the

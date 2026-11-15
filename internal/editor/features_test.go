@@ -242,7 +242,7 @@ func TestSessionRestore(t *testing.T) {
 	e1.BuildUI()
 	e1.OpenPath(path)
 	e1.code.setCaret(pos{row: 2, col: 3})
-	e1.saveSession(path)
+	e1.saveSession()
 
 	w2 := test.NewWindow(nil)
 	e2 := New(a, w2)
