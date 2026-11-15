@@ -46,7 +46,15 @@ day-to-day features you actually reach for — no plugin system, no bloat.
   while it loaded, Gaze asks before replacing it
 - **Save guard** — a save warns when the file was changed on disk since it was
   opened, rather than overwriting it silently
-- **Session restore** — reopen the last file and caret position on a bare launch
+- **Tabs** — every file opens in its own tab instead of replacing what you were
+  reading, and the strip above the text shows them: the name, a dot when the buffer
+  has unsaved changes, a cross to close it. Undo history, scroll position, caret,
+  language, indentation and the marks on the scrollbar all belong to the buffer, so
+  switching back is instant. `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle, `Ctrl+W` closes
+  (asking first when there is unsaved work), and opening a file that is already open
+  shows its tab rather than reading it again
+- **Session restore** — reopen the files that were open, in their tabs, with the
+  caret where it was on a bare launch
 - **Drag & drop** a file onto the window to open it
 - **Recent files** — persisted list (max 10) under *File → Open Recent*
 - **Find & replace** — next with wrap-around, match-case, **regex** (with `$1`

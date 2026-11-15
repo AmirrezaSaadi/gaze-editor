@@ -11,6 +11,61 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.12.0] - 2026-11-15
+
+Tabs: open buffers side by side.
+
+### Added
+
+- **Tabs.** Every file opens into its own tab instead of replacing the buffer you
+  were reading, and a strip above the text shows them — the name (shortened rather
+  than allowed to run away), a dot when the buffer has unsaved changes, and a cross
+  to close it, with the active one filled in and a button that opens another. The
+  strip hides itself while only one buffer is open, scrolls sideways when there are
+  more than fit, and follows the theme.
+- **Everything that belongs to a buffer moves with it**: the document, the caret,
+  undo and redo, the scroll position, the highlighting and its cache, the language,
+  the indentation style, the line endings, the encoding, what is known about the file
+  on disk, the word counts and the search marks. Switching is a copy of those fields,
+  not a reload.
+- `Ctrl+Tab` and `Ctrl+Shift+Tab` cycle through the open buffers, `Ctrl+W` closes the
+  one being edited (asking first when it has unsaved changes), and `File → Close Tab`
+  / `Next Tab` / `Previous Tab` do the same from the menu.
+- **The session restores the whole set**: the files that were open come back in
+  their tabs, in order, with the one that was being edited active and its caret where
+  it was. They are opened one after the other as each finishes installing, a file
+  that has gone since is skipped, and a session saved by an older version (one file)
+  still restores.
+- Switching away from a dirty buffer gives it a recovery snapshot, so unsaved work in
+  a tab that is not on screen survives a crash.
+
+### Changed
+
+- **Opening a file no longer interrupts the buffer being edited.** The "changes made
+  while opening" question is gone: the edited buffer keeps its tab, and New is just
+  another tab. Opening a file that is already open shows its tab instead of reading it
+  again, which keeps the edits, the caret and the undo history it has.
+- Quitting names every buffer that would be thrown away, not just the visible one.
+- The window title says which tab of how many is being shown.
+
+### Fixed
+
+- **A save that finished after a tab switch landed on the wrong buffer**: it renamed
+  the visible one and cleared its unsaved changes. The request now carries the buffer
+  it belongs to, and the dirty flag is counted per buffer rather than for the window.
+- Unused build-up of find-mark rectangles could clash with a stale scan from another
+  tab: the marks are read once per repaint and a result that arrives for a buffer that
+  is no longer on screen is dropped.
+
+### Tests
+
+- `tabs_test.go`: buffers keeping their text, caret, undo and scroll across switches,
+  cycling, reopening an open file, New reusing an untouched buffer, closing (active,
+  background, last), the per-buffer dirty marks and quit message, the title, the strip
+  appearing and hiding, the chips' colours and dots, taps on a chip and its cross,
+  saving across a switch, edits during a save, and session restore (all tabs, missing
+  files, the old single-file preference, untitled buffers).
+
 ## [1.11.1] - 2026-11-10
 
 Marks on the scrollbar, block transforms, and a tab that looks like a tab.
