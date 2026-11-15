@@ -2034,12 +2034,14 @@ func (v *codeView) setMarks(rows []int) {
 func (r *codeRenderer) syncMarks(trackX, barW float32) {
 	v := r.v
 	lines := v.docLines()
-	want := len(v.marks)
-	if want > maxFindMarks {
-		want = maxFindMarks
+	// The marks arrive from a background scan, so take one reading of them: a
+	// second read could be of a different slice than the length was taken from.
+	marks := v.marks
+	if len(marks) > maxFindMarks {
+		marks = marks[:maxFindMarks]
 	}
-	if len(v.markRects) < want {
-		for len(v.markRects) < want {
+	if len(v.markRects) < len(marks) {
+		for len(v.markRects) < len(marks) {
 			m := canvas.NewRectangle(v.markColor)
 			v.markRects = append(v.markRects, m)
 		}
@@ -2047,11 +2049,11 @@ func (r *codeRenderer) syncMarks(trackX, barW float32) {
 	}
 	height := v.Size().Height
 	for i, m := range v.markRects {
-		if i >= want || lines <= 0 {
+		if i >= len(marks) || lines <= 0 {
 			m.Hide()
 			continue
 		}
-		y := height * float32(v.marks[i]) / float32(lines)
+		y := height * float32(marks[i]) / float32(lines)
 		if y > height-markThick {
 			y = height - markThick
 		}

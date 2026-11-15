@@ -209,6 +209,7 @@ func (e *Editor) activate(i int) {
 	e.saveActive()
 	e.active = i
 	e.loadActive(e.tabs[i])
+	e.refreshTabs()
 }
 
 // NextTab and PrevTab cycle through the open buffers, wrapping around.
@@ -252,6 +253,7 @@ func (e *Editor) addTab(t *tab) {
 		e.active = len(e.tabs) - 1
 	}
 	e.loadActive(t)
+	e.refreshTabs()
 }
 
 // addUntitled opens an empty buffer in a new tab, unless the one being edited is
@@ -314,6 +316,7 @@ func (e *Editor) removeTab(i int) {
 		e.tabs = append(e.tabs, &tab{doc: NewDocument(""), eol: eolLF, enc: encUTF8, width: 4})
 		e.active = 0
 		e.loadActive(e.tabs[0])
+		e.refreshTabs()
 		return
 	}
 	switch {
@@ -325,6 +328,7 @@ func (e *Editor) removeTab(i int) {
 		}
 		e.loadActive(e.tabs[e.active])
 	}
+	e.refreshTabs()
 }
 
 // dirtyTabs names the buffers with unsaved changes.

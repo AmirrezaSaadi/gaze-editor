@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/test"
 )
 
 // openFile opens path in a tab and waits for it.
@@ -296,5 +298,94 @@ func TestSwitchTabsKeepsTheViewSane(t *testing.T) {
 	}
 	if e.code.doc != e.doc {
 		t.Fatal("the view and the editor disagree about the document")
+	}
+}
+
+// The bar only appears once there is something to switch between.
+func TestTabBarAppearsWithASecondTab(t *testing.T) {
+	e := newTestEditor(t)
+	if e.tabBar.Visible() {
+		t.Fatal("the tab bar shows with a single buffer")
+	}
+	a := writeFile(t, "a.txt", "a\n")
+	openFile(t, e, a)
+	if e.tabBar.Visible() {
+		t.Fatal("the tab bar shows after one file")
+	}
+	b := writeFile(t, "b.txt", "b\n")
+	openFile(t, e, b)
+	if !e.tabBar.Visible() {
+		t.Fatal("the tab bar is hidden with two buffers")
+	}
+	if got := len(e.tabBox.Objects); got != 2 {
+		t.Fatalf("%d chips, want 2", got)
+	}
+	openFile(t, e, a) // shows the open tab rather than adding one
+	if got := len(e.tabBox.Objects); got != 2 {
+		t.Fatalf("%d chips after reopening an open file, want 2", got)
+	}
+	e.CloseTab()
+	e.activate(0)
+	e.CloseTab()
+	if e.tabBar.Visible() {
+		t.Fatal("the tab bar stayed after the last file was closed")
+	}
+}
+
+// The active chip is drawn differently from the others, and carries the dot when
+// its buffer has unsaved changes.
+func TestTabBarMarksTheActiveBuffer(t *testing.T) {
+	e := newTestEditor(t)
+	a := writeFile(t, "a.txt", "a\n")
+	b := writeFile(t, "b.txt", "b\n")
+	openFile(t, e, a)
+	openFile(t, e, b)
+	e.activate(0)
+
+	chips := e.tabBox.Objects
+	active, other := chips[0].(*tabChip), chips[1].(*tabChip)
+	if active.index != 0 || other.index != 1 {
+		t.Fatalf("chips are at %d and %d", active.index, other.index)
+	}
+	// The active chip is filled; the inactive one is not.
+	activeBG := test.WidgetRenderer(active).Objects()[0].(*canvas.Rectangle)
+	otherBG := test.WidgetRenderer(other).Objects()[0].(*canvas.Rectangle)
+	if activeBG.FillColor == otherBG.FillColor {
+		t.Fatal("the active and inactive chips are drawn the same")
+	}
+	label := test.WidgetRenderer(active).Objects()[1].(*canvas.Text)
+	if label.Text != "a.txt" {
+		t.Fatalf("the chip reads %q", label.Text)
+	}
+	text(e, "x")
+	label = test.WidgetRenderer(active).Objects()[1].(*canvas.Text)
+	if label.Text != "a.txt •" {
+		t.Fatalf("the chip reads %q after an edit", label.Text)
+	}
+}
+
+// Tapping a chip switches to it, and tapping its cross closes it.
+func TestTabBarTaps(t *testing.T) {
+	e := newTestEditor(t)
+	a := writeFile(t, "a.txt", "a\n")
+	b := writeFile(t, "b.txt", "b\n")
+	openFile(t, e, a)
+	openFile(t, e, b)
+	e.activate(0)
+
+	chips := e.tabBox.Objects
+	tap := func(o fyne.CanvasObject) fyne.Tappable { return o.(fyne.Tappable) }
+	test.Tap(tap(chips[1]))
+	if e.currentFile != b {
+		t.Fatalf("tapping the second chip showed %q", e.currentFile)
+	}
+	// The right-hand end of a chip is its close cross.
+	e.activate(1)
+	test.TapAt(tap(chips[1]), fyne.NewPos(chips[1].Size().Width-2, 8))
+	if got := e.TabCount(); got != 1 {
+		t.Fatalf("%d tabs after tapping the cross, want 1", got)
+	}
+	if e.currentFile != a {
+		t.Fatalf("showing %q after closing the other tab", e.currentFile)
 	}
 }

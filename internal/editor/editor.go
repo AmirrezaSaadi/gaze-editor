@@ -74,6 +74,9 @@ type Editor struct {
 	// this struct describe. The state of the others is stashed in their tab.
 	tabs   []*tab
 	active int
+	// tabBar is the strip of chips, and tabBox the row of them.
+	tabBar *fyne.Container
+	tabBox *fyne.Container
 
 	editSeq    uint64
 	statsKnown bool // whether the word/character counts are current
@@ -341,13 +344,15 @@ func (e *Editor) buildLayout() {
 
 	toolbar := container.NewHBox(newBtn, openBtn, saveBtn, findBtn, layout.NewSpacer(), themeBtn)
 
-	top := container.NewVBox(toolbar, e.findBar)
+	e.buildTabBar()
+	top := container.NewVBox(toolbar, e.tabBar, e.findBar)
 	// The status line is the middle of the bar, so it gets the width the readout
 	// on the right does not need and truncates instead of running into it.
 	e.loadSlot = container.NewStack()
 	bottom := container.NewBorder(nil, nil, e.loadSlot, container.NewPadded(e.info), container.NewPadded(e.status))
 	main := container.NewBorder(top, bottom, nil, nil, e.code)
 	e.win.SetContent(container.NewStack(main, e.tipLayer))
+	e.refreshTabs()
 	if c := e.win.Canvas(); c != nil {
 		c.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyEscape}, func(fyne.Shortcut) { e.escape() })
 		c.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyUp, Modifier: fyne.KeyModifierAlt}, func(fyne.Shortcut) { e.historyPrev() })
@@ -558,6 +563,8 @@ func (e *Editor) updateTitle() {
 	}
 	e.lastTitle = title
 	e.win.SetTitle(title)
+	// The unsaved-changes dot in the tab bar follows the one in the title.
+	e.refreshTabChip()
 }
 
 // updateInfo refreshes the compact cursor/document readout in the status bar.
@@ -942,6 +949,20 @@ func (e *Editor) refreshMetrics() {
 	}
 }
 
+// buildTabBar builds the strip of open buffers: the chips scroll sideways when
+// there are more of them than fit, and the button on the right opens another.
+func (e *Editor) buildTabBar() {
+	e.tabBox = container.NewHBox()
+	newBtn := newTipButton("", ftheme.ContentAddIcon(), "New file (Ctrl+N)", e.NewFile)
+	e.bindTips(newBtn)
+	// A tall enough scroller that one line of chips shows without a vertical bar.
+	strip := container.NewHScroll(e.tabBox)
+	strip.SetMinSize(fyne.NewSize(120,
+		ftheme.Size(ftheme.SizeNameText)+2*tabChipPad+ftheme.Size(ftheme.SizeNamePadding)))
+	e.tabBar = container.NewBorder(nil, nil, nil, newBtn, strip)
+	e.tabBar.Hide()
+}
+
 func (e *Editor) syncTheme() {
 	for n, item := range e.themeItems {
 		item.Checked = n == e.themes.Current()
@@ -950,6 +971,7 @@ func (e *Editor) syncTheme() {
 		menu.Refresh()
 	}
 	e.refreshMetrics()
+	e.refreshTabs()
 	e.updateInfo()
 	e.setStatus("theme: " + e.themes.Current())
 }

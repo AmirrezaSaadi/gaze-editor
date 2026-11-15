@@ -433,6 +433,7 @@ func (e *Editor) refreshMarks() {
 	// The snapshot holds the page table, so the scan reads stable text while the
 	// window keeps being edited, and needs no line index of its own.
 	snap := e.doc.Snapshot()
+	tab := e.active
 	e.marksTimer = time.AfterFunc(findMarkDelay, func() {
 		m, err := newMatcher(query, regex, matchCase)
 		if err != nil {
@@ -440,7 +441,9 @@ func (e *Editor) refreshMarks() {
 		}
 		rows := findMarkLines(snap, m)
 		fyne.Do(func() {
-			if e.marksSeq.Load() != seq || e.code == nil {
+			// A newer query, or another tab, has taken over: the rows belong to a
+			// document that is no longer on screen.
+			if e.marksSeq.Load() != seq || e.code == nil || e.active != tab {
 				return
 			}
 			e.code.setMarks(rows)

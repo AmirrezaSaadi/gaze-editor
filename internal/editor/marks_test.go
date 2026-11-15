@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fyne.io/fyne/v2/canvas"
 )
 
 // marksEditor installs text and makes the mark scans immediate.
@@ -85,10 +87,11 @@ func TestFindMarksShowAndClear(t *testing.T) {
 	}
 	// The ticks are drawn along the bar, in order.
 	e.code.render()
-	if got := len(e.code.markRects); got != 200 {
-		t.Fatalf("%d tick objects, want 200", got)
+	drawn := visibleMarks(e)
+	if len(drawn) != 200 {
+		t.Fatalf("%d ticks drawn, want 200", len(drawn))
 	}
-	first, last := e.code.markRects[0], e.code.markRects[199]
+	first, last := drawn[0], drawn[len(drawn)-1]
 	if !first.Visible() || !last.Visible() {
 		t.Fatal("the ticks are not drawn")
 	}
@@ -150,4 +153,15 @@ func TestFindMarksWithABadRegex(t *testing.T) {
 	if len(e.code.marks) != 0 && len(e.code.marks) != 1 {
 		t.Fatalf("marks = %v after a bad pattern", e.code.marks)
 	}
+}
+
+// visibleMarks lists the tick rectangles that are on screen, in order.
+func visibleMarks(e *Editor) []*canvas.Rectangle {
+	out := make([]*canvas.Rectangle, 0, len(e.code.markRects))
+	for _, r := range e.code.markRects {
+		if r.Visible() {
+			out = append(out, r)
+		}
+	}
+	return out
 }

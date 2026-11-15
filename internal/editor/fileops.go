@@ -536,6 +536,7 @@ func (e *Editor) finishSave(req saveRequest, trimmed string) {
 	e.dirty = !sameBuffer
 	e.recordDiskState(req.path)
 	e.saveActive() // the tab follows the file it was just saved as
+	e.refreshTabs()
 	e.refreshChrome()
 	e.addRecent(req.path)
 	e.saveSession()
