@@ -390,6 +390,111 @@ func TestTabBarTaps(t *testing.T) {
 	}
 }
 
+// A launch brings back the whole set of files, in order, with the one that was
+// being edited active.
+func TestSessionRestoreAllTabs(t *testing.T) {
+	a := writeFile(t, "a.txt", "a\n")
+	b := writeFile(t, "b.txt", "b\nb2\nb3\n")
+	c := writeFile(t, "c.txt", "c\n")
+
+	a1 := test.NewApp()
+	w1 := test.NewWindow(nil)
+	e1 := New(a1, w1)
+	e1.BuildUI()
+	e1.OpenPath(a)
+	e1.OpenPath(b)
+	e1.OpenPath(c)
+	e1.activate(1)
+	e1.code.setCaret(pos{row: 2, col: 1})
+	e1.saveSession()
+
+	w2 := test.NewWindow(nil)
+	e2 := New(a1, w2)
+	e2.BuildUI()
+	if !e2.RestoreSession() {
+		t.Fatal("the session was not restored")
+	}
+	waitFor(t, "the tabs to come back", func() bool { return e2.TabCount() == 3 })
+	if got := e2.TabPaths(); got[0] != a || got[1] != b || got[2] != c {
+		t.Fatalf("restored tabs = %v", got)
+	}
+	if e2.currentFile != b {
+		t.Fatalf("the active tab is %q, want the second", e2.currentFile)
+	}
+	if row, col := caret(e2); row != 2 || col != 1 {
+		t.Fatalf("caret came back at %d:%d, want 2:1", row, col)
+	}
+}
+
+// A file that has gone since the last session is skipped rather than reported.
+func TestSessionRestoreSkipsMissingFiles(t *testing.T) {
+	a := writeFile(t, "a.txt", "a\n")
+	gone := filepath.Join(t.TempDir(), "gone.txt")
+	if err := os.WriteFile(gone, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := test.NewApp()
+	e1 := New(app, test.NewWindow(nil))
+	e1.BuildUI()
+	e1.OpenPath(a)
+	e1.OpenPath(gone)
+	e1.saveSession()
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	e2 := New(app, test.NewWindow(nil))
+	e2.BuildUI()
+	if !e2.RestoreSession() {
+		t.Fatal("the remaining file was not restored")
+	}
+	waitFor(t, "the tab to come back", func() bool { return e2.TabCount() == 1 })
+	if e2.currentFile != a {
+		t.Fatalf("showing %q", e2.currentFile)
+	}
+}
+
+// A session saved by an older version, which only knew one file, still restores.
+func TestSessionRestoreSingleFilePreference(t *testing.T) {
+	a := writeFile(t, "a.txt", "a\nb\n")
+	app := test.NewApp()
+	p := app.Preferences()
+	p.SetString(prefLastFile, a)
+	p.SetInt(prefLastRow, 1)
+
+	e := New(app, test.NewWindow(nil))
+	e.BuildUI()
+	if !e.RestoreSession() {
+		t.Fatal("the old session was not restored")
+	}
+	waitFor(t, "the file to open", func() bool { return e.currentFile == a })
+	if got := e.TabCount(); got != 1 {
+		t.Fatalf("%d tabs, want 1", got)
+	}
+	if row, _ := caret(e); row != 1 {
+		t.Fatalf("caret at row %d, want 1", row)
+	}
+}
+
+// An untitled buffer cannot be restored, and does not stop the files from coming
+// back.
+func TestSessionRestoreIgnoresUntitled(t *testing.T) {
+	a := writeFile(t, "a.txt", "a\n")
+	app := test.NewApp()
+	e1 := New(app, test.NewWindow(nil))
+	e1.BuildUI()
+	e1.OpenPath(a)
+	e1.NewFile()
+	text(e1, "unsaved draft")
+	e1.saveSession()
+
+	e2 := New(app, test.NewWindow(nil))
+	e2.BuildUI()
+	e2.RestoreSession()
+	waitFor(t, "the file to come back", func() bool { return e2.TabCount() == 1 && e2.currentFile == a })
+}
+
 // A save that finishes after the user switched tabs must land on the buffer it was
 // started for, not on the one that is now on screen.
 func TestSaveAppliesToItsOwnTab(t *testing.T) {

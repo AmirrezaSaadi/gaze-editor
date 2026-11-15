@@ -23,7 +23,16 @@ const (
 	prefLastRow  = "lastRow"
 	prefLastCol  = "lastCol"
 
+	// prefOpenTabs is the list of files that were open, in tab order, so a launch
+	// brings the whole set back.
+	prefOpenTabs = "openTabs"
+	// prefActiveTab is which of them was being edited.
+	prefActiveTab = "activeTab"
+
 	maxRecent = 10
+	// maxRestoredTabs bounds how many buffers a launch reopens, so a session left
+	// with dozens of them cannot turn every start into a burst of reads.
+	maxRestoredTabs = 10
 )
 
 // Size limits for opening a file. Gaze keeps the whole document in a page store
@@ -782,43 +791,109 @@ func (e *Editor) refreshRecentMenu() {
 	}
 }
 
-// saveSession records the file and caret for the next launch.
+// saveSession records the open buffers, the active one and its caret for the next
+// launch. Buffers without a file cannot be restored: they are what the recovery
+// snapshots are for.
 func (e *Editor) saveSession() {
-	path := e.currentFile
-	if path == "" {
+	p := e.app.Preferences()
+	paths := make([]string, 0, len(e.tabs))
+	active := 0
+	for i, t := range e.tabs {
+		if t.path == "" {
+			continue
+		}
+		if i == e.active {
+			active = len(paths)
+		}
+		paths = append(paths, t.path)
+	}
+	p.SetStringList(prefOpenTabs, paths)
+	p.SetInt(prefActiveTab, active)
+	if e.currentFile == "" {
 		return
 	}
-	p := e.app.Preferences()
-	p.SetString(prefLastFile, path)
 	// Document coordinates, so a large file reopens at the right line rather
 	// than at the top of whichever window happened to be loaded.
+	p.SetString(prefLastFile, e.currentFile)
 	line, col := e.caretLineCol()
 	p.SetInt(prefLastRow, line-1)
 	p.SetInt(prefLastCol, col-1)
 }
 
-// RestoreSession reopens the file from the previous session (if it still
-// exists) and returns to where the caret was. It reports whether an open was
-// started — a large file asks before it loads, so the outcome is known later.
-func (e *Editor) RestoreSession() bool {
-	path := e.app.Preferences().StringWithFallback(prefLastFile, "")
-	if path == "" {
-		return false
-	}
-	size, err := fileSize(path)
-	if err != nil {
-		return false
-	}
-	row := e.app.Preferences().IntWithFallback(prefLastRow, 0)
-	col := e.app.Preferences().IntWithFallback(prefLastCol, 0)
-	e.confirmOpenSize(filepath.Base(path), size, func(mode openMode) {
-		after := func() {}
-		if row > 0 || col > 0 {
-			after = func() { e.gotoLineCol(row+1, col) }
+// sessionPaths is the list of files to reopen: the whole set when Gaze saved one,
+// or the single file an older version recorded.
+func (e *Editor) sessionPaths() []string {
+	paths := e.app.Preferences().StringList(prefOpenTabs)
+	if len(paths) == 0 {
+		if last := e.app.Preferences().StringWithFallback(prefLastFile, ""); last != "" {
+			paths = []string{last}
 		}
-		e.startOpen(path, mode, after)
-	})
+	}
+	if len(paths) > maxRestoredTabs {
+		paths = paths[:maxRestoredTabs]
+	}
+	return paths
+}
+
+// RestoreSession reopens the files of the previous session and returns to where the
+// caret was in the one that was being edited. It reports whether an open was
+// started — a large file is read in the background, so the outcome is known later.
+func (e *Editor) RestoreSession() bool {
+	paths := e.sessionPaths()
+	if len(paths) == 0 {
+		return false
+	}
+	// Any file that has gone is skipped rather than reported: a launch is not the
+	// moment to complain about a scratch file.
+	queue := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			queue = append(queue, p)
+		}
+	}
+	if len(queue) == 0 {
+		return false
+	}
+	e.restoreQueue = queue
+	e.restoreActive = e.app.Preferences().IntWithFallback(prefActiveTab, 0)
+	e.restoreNext()
 	return true
+}
+
+// restoreNext opens the next file of the session, and the one after it once this
+// one has been installed, so a set of tabs comes back in order.
+func (e *Editor) restoreNext() {
+	if len(e.restoreQueue) == 0 {
+		if i := e.restoreActive; i >= 0 && i < len(e.tabs) {
+			e.activate(i)
+		}
+		e.restoreActive = -1
+		e.restoreCaret()
+		return
+	}
+	path := e.restoreQueue[0]
+	e.restoreQueue = e.restoreQueue[1:]
+	mode := openNormal
+	if size, err := fileSize(path); err == nil && size > LargeFileBytes {
+		// A file that was open last time opens without asking about its size.
+		mode = openLarge
+	}
+	e.startOpen(path, mode, e.restoreNext)
+}
+
+// restoreCaret puts the caret back where the previous session left it, in the buffer
+// that is being edited now.
+func (e *Editor) restoreCaret() {
+	p := e.app.Preferences()
+	row := p.IntWithFallback(prefLastRow, 0)
+	col := p.IntWithFallback(prefLastCol, 0)
+	if row <= 0 && col <= 0 {
+		return
+	}
+	if last := p.StringWithFallback(prefLastFile, ""); last != "" && e.currentFile != last {
+		return
+	}
+	e.gotoLineCol(row+1, col)
 }
 
 // onDropped opens the first file dropped onto the window.

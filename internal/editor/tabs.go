@@ -209,6 +209,10 @@ func (e *Editor) activate(i int) {
 	if i < 0 || i >= len(e.tabs) || i == e.active {
 		return
 	}
+	// A buffer that is leaving the screen gets its snapshot now: one that is not
+	// visible cannot be saved by the user, so a crash would otherwise take its
+	// unsaved work with it.
+	e.maybeAutosave()
 	e.saveActive()
 	e.active = i
 	e.loadActive(e.tabs[i])

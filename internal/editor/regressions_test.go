@@ -316,12 +316,13 @@ func firstToolbarButton(obj fyne.CanvasObject) *tipButton {
 // Recounting a large buffer on every keystroke is what made typing stutter, so
 // the recount is deferred instead of run inline.
 func TestLargeBufferStatsAreDeferred(t *testing.T) {
+	e := newTestEditor(t)
+	// The limit drops after the content is installed, so no recount of it can still
+	// be in flight when the cached count is poisoned below.
+	e.SetContent("hello world", "")
 	old := statsSyncLimit
 	statsSyncLimit = 8
 	t.Cleanup(func() { statsSyncLimit = old })
-
-	e := newTestEditor(t)
-	e.SetContent("hello world", "")
 
 	e.statChars = 0 // poison the cached count
 	e.updateStatsForChange()

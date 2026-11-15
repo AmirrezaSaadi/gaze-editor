@@ -78,6 +78,11 @@ type Editor struct {
 	tabBar *fyne.Container
 	tabBox *fyne.Container
 
+	// restoreQueue holds the files of the previous session still to reopen, and
+	// restoreActive which of them was being edited.
+	restoreQueue  []string
+	restoreActive int
+
 	editSeq    uint64
 	statsKnown bool // whether the word/character counts are current
 
