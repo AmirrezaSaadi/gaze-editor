@@ -31,6 +31,9 @@ type tab struct {
 	statWords int
 	statChars int
 	statKnown bool
+	// edits is the edit counter of the window when this buffer was last changed,
+	// so a save can tell whether the buffer it wrote has moved on since.
+	edits uint64
 
 	view viewState
 }

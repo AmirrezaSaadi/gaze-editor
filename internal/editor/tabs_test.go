@@ -389,3 +389,52 @@ func TestTabBarTaps(t *testing.T) {
 		t.Fatalf("showing %q after closing the other tab", e.currentFile)
 	}
 }
+
+// A save that finishes after the user switched tabs must land on the buffer it was
+// started for, not on the one that is now on screen.
+func TestSaveAppliesToItsOwnTab(t *testing.T) {
+	e := newTestEditor(t)
+	a := writeFile(t, "a.txt", "one\n")
+	b := writeFile(t, "b.txt", "two\n")
+	openFile(t, e, a)
+	text(e, "A")
+	req := e.pendingSave(a) // the write is in flight
+	openFile(t, e, b)
+	text(e, "B")
+
+	e.finishSave(req, "")
+
+	if e.currentFile != b {
+		t.Fatalf("the save renamed the visible buffer to %q", e.currentFile)
+	}
+	if !e.IsDirty() {
+		t.Fatal("the visible buffer lost its unsaved changes to another buffer's save")
+	}
+	if got := e.text(); got != "Btwo\n" {
+		t.Fatalf("the visible buffer = %q", got)
+	}
+	e.activate(0)
+	if e.IsDirty() {
+		t.Fatal("the saved buffer is still marked dirty")
+	}
+	// The saved tab took the path it was written to.
+	if e.tabs[0].path != a {
+		t.Fatalf("the saved tab is %q", e.tabs[0].path)
+	}
+}
+
+// Edits typed into a buffer while its own save was in flight leave it dirty.
+func TestEditsDuringSaveLeaveTheTabDirty(t *testing.T) {
+	e := newTestEditor(t)
+	a := writeFile(t, "a.txt", "one\n")
+	openFile(t, e, a)
+	req := e.pendingSave(a)
+	text(e, "more ")
+	e.finishSave(req, "")
+	if !e.IsDirty() {
+		t.Fatal("edits made during the save were reported as saved")
+	}
+	if got := e.text(); got != "more one\n" {
+		t.Fatalf("buffer = %q", got)
+	}
+}

@@ -244,6 +244,9 @@ func (e *Editor) onCodeChange() {
 	}
 	e.dirty = true
 	e.editSeq++
+	if e.active >= 0 && e.active < len(e.tabs) {
+		e.tabs[e.active].edits = e.editSeq
+	}
 	if e.findBar != nil && e.findBar.Visible() {
 		e.refreshMarks()
 	}

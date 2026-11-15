@@ -394,6 +394,7 @@ func (e *Editor) SaveFile() {
 // a background goroutine without reading widgets concurrently with editing.
 type saveRequest struct {
 	path    string
+	tab     int       // the buffer being saved, which may not be the visible one by now
 	doc     *Document // the text is streamed from its pages
 	eol     string
 	enc     string
@@ -406,6 +407,7 @@ type saveRequest struct {
 func (e *Editor) pendingSave(path string) saveRequest {
 	req := saveRequest{
 		path: path,
+		tab:  e.active,
 		eol:  e.eol,
 		enc:  e.enc,
 		// Trimming needs a second copy of the buffer to compare against, so it is
@@ -524,20 +526,31 @@ func (e *Editor) saveAsync(path string) {
 	}()
 }
 
-// finishSave installs the results of a successful write. Edits made while the
-// write was in flight are preserved and leave the document dirty.
+// finishSave installs the results of a successful write into the buffer it was
+// started for. That buffer may not be the visible one any more: the user can switch
+// tabs while a big file is being written, and the result must land on the buffer it
+// belongs to rather than on whatever is on screen.
 func (e *Editor) finishSave(req saveRequest, trimmed string) {
-	// The buffer is unchanged if nothing was typed since the request was made.
-	sameBuffer := e.editSeq == req.seq
-	if sameBuffer && trimmed != "" {
+	if req.tab < 0 || req.tab >= len(e.tabs) {
+		return
+	}
+	t := e.tabs[req.tab]
+	active := req.tab == e.active
+	// The buffer is unchanged if nothing was typed into it since the request.
+	sameBuffer := t.edits <= req.seq
+	if active && sameBuffer && trimmed != "" {
 		e.adoptTrimmed(trimmed)
 	}
-	e.currentFile = req.path
-	e.dirty = !sameBuffer
-	e.recordDiskState(req.path)
-	e.saveActive() // the tab follows the file it was just saved as
+	t.path = req.path
+	t.dirty = !sameBuffer
+	t.diskPath, t.diskMod, t.diskSize, t.diskKnown = diskStateOf(req.path)
+	if active {
+		e.currentFile = req.path
+		e.dirty = !sameBuffer
+		e.diskPath, e.diskMod, e.diskSize, e.diskKnown = t.diskPath, t.diskMod, t.diskSize, t.diskKnown
+		e.refreshChrome()
+	}
 	e.refreshTabs()
-	e.refreshChrome()
 	e.addRecent(req.path)
 	e.saveSession()
 	clearRecovery(req.path)

@@ -221,9 +221,10 @@ func TestEditsDuringSaveAreKept(t *testing.T) {
 
 	e := newTestEditor(t)
 	e.SetContent("first", path)
-	req := e.pendingSave(path)   // snapshot handed to the writer
-	setBuffer(e, "first + more") // the user keeps typing
-	e.finishSave(req, "first")   // …and the write completes
+	req := e.pendingSave(path) // snapshot handed to the writer
+	e.code.setCaret(pos{row: 0, col: 5})
+	text(e, " + more")         // the user keeps typing in the same buffer
+	e.finishSave(req, "first") // …and the write completes
 
 	if bufferText(e) != "first + more" {
 		t.Fatalf("buffer overwritten by the save: %q", bufferText(e))
