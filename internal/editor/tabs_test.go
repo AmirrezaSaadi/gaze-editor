@@ -357,10 +357,27 @@ func TestTabBarMarksTheActiveBuffer(t *testing.T) {
 	if label.Text != "a.txt" {
 		t.Fatalf("the chip reads %q", label.Text)
 	}
+	// The dot appears on the first keystroke, in the space the cross leaves free.
+	dot := test.WidgetRenderer(active).Objects()[2].(*canvas.Circle)
+	if dot.Visible() {
+		t.Fatal("the dot is showing on a buffer with no unsaved changes")
+	}
 	text(e, "x")
 	label = test.WidgetRenderer(active).Objects()[1].(*canvas.Text)
-	if label.Text != "a.txt •" {
+	if label.Text != "a.txt" {
 		t.Fatalf("the chip reads %q after an edit", label.Text)
+	}
+	if !dot.Visible() {
+		t.Fatal("no dot after an edit")
+	}
+	if otherDot := test.WidgetRenderer(other).Objects()[2].(*canvas.Circle); otherDot.Visible() {
+		t.Fatal("the unchanged chip has a dot")
+	}
+	// The dot sits between the name and the cross, not on top of either.
+	width := active.Size().Width
+	if dot.Position().X+dot.Size().Width > width-tabChipPad-tabChipClose {
+		t.Fatalf("the dot at %.1f overlaps the cross on a chip %.1f wide",
+			dot.Position().X, width)
 	}
 }
 
@@ -387,6 +404,10 @@ func TestTabBarTaps(t *testing.T) {
 	}
 	if e.currentFile != a {
 		t.Fatalf("showing %q after closing the other tab", e.currentFile)
+	}
+	// A chip is not something to type into, so the text keeps the keyboard.
+	if got := e.win.Canvas().Focused(); got != fyne.Focusable(e.code) {
+		t.Fatalf("focus went to %T after tapping a chip", got)
 	}
 }
 
@@ -541,5 +562,46 @@ func TestEditsDuringSaveLeaveTheTabDirty(t *testing.T) {
 	}
 	if got := e.text(); got != "more one\n" {
 		t.Fatalf("buffer = %q", got)
+	}
+}
+
+// With more chips than fit, the strip scrolls so the one being edited is in view:
+// otherwise switching to a buffer off the right-hand end changes the text while the
+// bar still shows the old chips.
+func TestActiveChipIsScrolledIntoView(t *testing.T) {
+	e := newTestEditor(t)
+	var last string
+	for _, n := range []string{"a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt"} {
+		last = writeFile(t, n, n+"\n")
+		openFile(t, e, last)
+	}
+	e.win.Resize(fyne.NewSize(360, 260))
+	e.win.Content().Resize(fyne.NewSize(360, 260))
+	e.activate(0)
+	if off := e.tabStrip.Offset.X; off != 0 {
+		t.Fatalf("the strip starts scrolled to %.1f", off)
+	}
+
+	e.activate(5) // the last chip is off the right-hand end
+	chip := e.tabBox.Objects[5]
+	view := e.tabStrip.Size().Width
+	off := e.tabStrip.Offset.X
+	if view <= 0 {
+		t.Fatalf("the strip is %.1f wide", view)
+	}
+	if chip.Position().X < off || chip.Position().X+chip.Size().Width > off+view {
+		t.Fatalf("chip at %.1f..%.1f is outside the view %.1f..%.1f",
+			chip.Position().X, chip.Position().X+chip.Size().Width, off, off+view)
+	}
+	if e.currentFile != last {
+		t.Fatalf("showing %q", e.currentFile)
+	}
+
+	// Coming back scrolls the other way.
+	e.activate(0)
+	first := e.tabBox.Objects[0]
+	if first.Position().X < e.tabStrip.Offset.X {
+		t.Fatalf("the first chip at %.1f is left of the view at %.1f",
+			first.Position().X, e.tabStrip.Offset.X)
 	}
 }

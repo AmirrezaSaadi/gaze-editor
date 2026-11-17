@@ -74,9 +74,11 @@ type Editor struct {
 	// this struct describe. The state of the others is stashed in their tab.
 	tabs   []*tab
 	active int
-	// tabBar is the strip of chips, and tabBox the row of them.
-	tabBar *fyne.Container
-	tabBox *fyne.Container
+	// tabBar is the strip of chips, tabBox the row of them, and tabStrip the
+	// scroller that keeps a long row of them reachable.
+	tabBar   *tabBarWidget
+	tabBox   *fyne.Container
+	tabStrip *container.Scroll
 
 	// restoreQueue holds the files of the previous session still to reopen, and
 	// restoreActive which of them was being edited.
@@ -572,7 +574,7 @@ func (e *Editor) updateTitle() {
 	e.lastTitle = title
 	e.win.SetTitle(title)
 	// The unsaved-changes dot in the tab bar follows the one in the title.
-	e.refreshTabChip()
+	e.refreshChips()
 }
 
 // updateInfo refreshes the compact cursor/document readout in the status bar.
@@ -964,10 +966,9 @@ func (e *Editor) buildTabBar() {
 	newBtn := newTipButton("", ftheme.ContentAddIcon(), "New file (Ctrl+N)", e.NewFile)
 	e.bindTips(newBtn)
 	// A tall enough scroller that one line of chips shows without a vertical bar.
-	strip := container.NewHScroll(e.tabBox)
-	strip.SetMinSize(fyne.NewSize(120,
-		ftheme.Size(ftheme.SizeNameText)+2*tabChipPad+ftheme.Size(ftheme.SizeNamePadding)))
-	e.tabBar = container.NewBorder(nil, nil, nil, newBtn, strip)
+	e.tabStrip = container.NewHScroll(e.tabBox)
+	e.tabStrip.SetMinSize(fyne.NewSize(120, tabStripHeight()))
+	e.tabBar = newTabBarWidget(e, container.NewBorder(nil, nil, nil, newBtn, e.tabStrip))
 	e.tabBar.Hide()
 }
 

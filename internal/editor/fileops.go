@@ -559,7 +559,7 @@ func (e *Editor) finishSave(req saveRequest, trimmed string) {
 		e.diskPath, e.diskMod, e.diskSize, e.diskKnown = t.diskPath, t.diskMod, t.diskSize, t.diskKnown
 		e.refreshChrome()
 	}
-	e.refreshTabs()
+	e.refreshChips()
 	e.addRecent(req.path)
 	e.saveSession()
 	clearRecovery(req.path)
