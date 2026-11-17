@@ -11,6 +11,48 @@ Releases are published on the
 
 Nothing yet.
 
+## [1.12.1] - 2026-11-15
+
+### Fixed
+
+- **Searching a large file no longer costs its size in memory.** Find built the whole
+  buffer as one string before looking through it, so a 211 MB file allocated 211 MB on
+  the first search, and the regexp engine keeps scratch space of its own proportional
+  to the text it is given — ten searches took the process from 429 MB to over 1026 MB
+  and it stayed there. A literal search now reads the document's pages, a regex is
+  given a window of a large file at a time (only patterns naming the start of the text,
+  `^` `\A` `\b` `\B`, still need the whole of it), and a search that did have to copy
+  the text gives the memory back when it is done. The same ten searches now allocate
+  1.2 MB in total.
+- **A search no longer lists every match.** The engine was asked for all of them, which
+  in a large file is more memory than the file — 3.4 million matches is over 100 MB.
+  One match is requested at a time; Replace All counts through the engine's callback
+  and never builds the list either.
+- **The tab bar is readable.** A long name set the chip's width from the text before
+  shortening, so the close cross drifted away from its name; the dot marking unsaved
+  changes was a character that pushed against the cross and could be shortened away; and
+  with more chips than fit, the bar scrolled but never followed the buffer being edited,
+  so switching to a tab off the right-hand end changed the text under a bar still
+  showing the old chips. The chips now have a slot for the cross and one for the dot
+  (reserved whether or not it is drawn, so a keystroke does not shift the neighbours),
+  the bar reveals the active chip on a switch, on a save and when the window narrows,
+  and the scrollbar has its own strip under the chips instead of running through them.
+  The bar also follows the zoom.
+- Tapping a chip gives the keyboard back to the text, and a save repaints only the chips
+  whose state changed rather than rebuilding the bar.
+
+### Tests
+
+- `search_test.go`: literal matches that span a page boundary (both directions of case),
+  Find over a buffer whose match straddles pages, regex matches across window edges and
+  in the last window, windowed results agreeing with the whole text, stepping and
+  wrapping, and the memory a search may allocate (32 KB for a literal, 512 KB for a
+  regex, on a 13 MB buffer).
+- `map_test.go`: a mapped document hands out its whole text and ranges of it without
+  copying, and stops doing so after the first edit.
+- `tabs_test.go`: the strip follows the active chip when the chips overflow, scrolling
+  back on the way out, and a tap on a chip leaves the keyboard with the text.
+
 ## [1.12.0] - 2026-11-15
 
 Tabs: open buffers side by side.
