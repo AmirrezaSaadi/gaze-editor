@@ -266,3 +266,43 @@ func TestMappedOpenReportsProgress(t *testing.T) {
 		t.Log("no percentage status was observed; the open may have been too fast to catch")
 	}
 }
+
+// A mapped document can hand out its whole text and any range of it without a copy,
+// which is what lets a search look through a large file for free. The first edit
+// breaks that: the pages are no longer pieces of the mapping.
+func TestMappedDocumentHoldsNoCopies(t *testing.T) {
+	text := mapTestText(500)
+	path := writeTestFile(t, "text.txt", text)
+	region, err := mapPath(path, int64(len(text)))
+	if err != nil {
+		t.Fatalf("mapPath: %v", err)
+	}
+	d := indexMapped(region)
+
+	whole, ok := d.Whole()
+	if !ok || whole != text {
+		t.Fatalf("Whole() = %v, %d bytes, want the %d byte text", ok, len(whole), len(text))
+	}
+	if got, ok := d.ViewRange(10, 20); !ok || got != text[10:20] {
+		t.Fatalf("ViewRange = %q, %v", got, ok)
+	}
+	if _, ok := d.ViewRange(-1, 10); ok {
+		t.Fatal("a range before the start was accepted")
+	}
+	if _, ok := d.ViewRange(0, d.Len()+1); ok {
+		t.Fatal("a range past the end was accepted")
+	}
+
+	d.ReplaceRange(0, 0, "xyz")
+	if _, ok := d.Whole(); ok {
+		t.Fatal("an edited document still claims its pages are a view of the mapping")
+	}
+	if _, ok := d.ViewRange(0, 3); ok {
+		t.Fatal("an edited document still hands out views of the mapping")
+	}
+
+	copied := NewDocument(text)
+	if _, ok := copied.Whole(); ok {
+		t.Fatal("a document built from a string has no mapping to offer")
+	}
+}

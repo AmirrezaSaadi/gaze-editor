@@ -42,6 +42,12 @@ type Document struct {
 	// of them is dropped, so unmapping would risk reading freed memory. Address
 	// space is what it costs, which is free on a 64-bit machine.
 	region []byte
+
+	// whole is the entire document as one string, set only while the pages are an
+	// untouched mapping of region. Searches read the document through it, so
+	// looking for something in a large file costs no copy of the file; the first
+	// edit replaces pages and clears it.
+	whole string
 }
 
 // mapped reports whether the document's pages point into a file mapping.
@@ -56,12 +62,34 @@ func pageView(b []byte) string {
 	return unsafe.String(&b[0], len(b))
 }
 
+// ViewRange returns the text between two offsets without copying it, when the
+// document is a mapping that has not been edited.
+func (d *Document) ViewRange(from, to int) (string, bool) {
+	if d == nil || d.whole == "" || from < 0 || to > d.size || from > to {
+		return "", false
+	}
+	return d.whole[from:to], true
+}
+
+// Whole returns the entire document without copying it, when the document is a
+// mapping that has not been edited. The string points into the mapping, which is
+// never released, so the caller must not keep it as its own copy.
+func (d *Document) Whole() (string, bool) {
+	if d == nil {
+		return "", false
+	}
+	if d.whole != "" || (d.region != nil && d.size == 0) {
+		return d.whole, true
+	}
+	return "", false
+}
+
 // indexMapped builds a document over a mapped file. The bytes are already text
 // with LF line endings — mappedFile checked that — so nothing is copied or
 // rewritten: the pages are views of the mapping and the line index is built by
 // walking it.
 func indexMapped(region []byte) *Document {
-	d := &Document{region: region, size: len(region)}
+	d := &Document{region: region, size: len(region), whole: pageView(region)}
 	var lines lineIndexBuilder
 	lines.add(0)
 	for off := 0; ; {
@@ -593,6 +621,7 @@ func (d *Document) ReplaceRange(from, to int, repl string) {
 	tail := d.pages[pj][to-d.starts[pj]:]
 	middle := head + repl + tail
 
+	d.whole = "" // the pages are no longer a plain view of the mapping
 	pages := make([]string, 0, len(d.pages)+1)
 	pages = append(pages, d.pages[:pi]...)
 	midPages, _ := chunkPages(middle)
@@ -646,6 +675,9 @@ func (d *Document) ReplaceAll(text string) {
 // user actions that need the whole text (find and replace); the display and the
 // save path never call it.
 func (d *Document) Text() string {
+	if d.whole != "" {
+		return d.whole
+	}
 	if len(d.pages) == 1 {
 		return d.pages[0]
 	}
@@ -662,7 +694,9 @@ func (d *Document) Text() string {
 // so a save on a background goroutine can read a snapshot while the window keeps
 // being edited.
 func (d *Document) Snapshot() *Document {
-	s := &Document{size: d.size}
+	// The whole-text view is a copy of a string header, and the mapping behind it is
+	// never released, so a snapshot can keep it and read the text for free.
+	s := &Document{size: d.size, whole: d.whole}
 	s.pages = append([]string(nil), d.pages...)
 	s.starts = append([]int(nil), d.starts...)
 	return s

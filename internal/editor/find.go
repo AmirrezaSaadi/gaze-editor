@@ -24,6 +24,24 @@ type matcher struct {
 	literal   bool
 	matchCase bool
 	re        *regexp.Regexp
+	// anchored marks a pattern that describes the start of the text (^ \A \b \B).
+	// Such a pattern has to be judged against the whole text: matching a slice of it
+	// would make the slice's first byte look like the beginning and produce matches
+	// that are not there.
+	anchored bool
+}
+
+// maxAnchorMatches bounds how many matches of an anchored pattern are listed at
+// once. Only patterns naming the start of the text pay this: the list exists so
+// that the search can step past matches before the caret, and one is normally all
+// there is.
+const maxAnchorMatches = 200_000
+
+// startSensitive reports whether a regular expression refers to the start of the
+// text, which a suffix of the text would fake.
+func startSensitive(expr string) bool {
+	return strings.Contains(expr, "^") || strings.Contains(expr, `\b`) ||
+		strings.Contains(expr, `\B`) || strings.Contains(expr, `\A`)
 }
 
 // newMatcher compiles a matcher for query. Regex syntax errors are returned so
@@ -33,6 +51,7 @@ func newMatcher(query string, regex, matchCase bool) (*matcher, error) {
 	if !regex {
 		return m, nil
 	}
+	m.anchored = startSensitive(query)
 	expr := query
 	if !matchCase {
 		expr = "(?i)" + expr
@@ -45,30 +64,27 @@ func newMatcher(query string, regex, matchCase bool) (*matcher, error) {
 	return m, nil
 }
 
-// matches returns every match of the regular expression in the whole buffer.
-//
-// Searching the full text rather than text[from:] matters: a slice makes its
-// own first byte look like the start of the text, so ^ would match mid-buffer
-// and \b would fire in the middle of a word.
+// matches returns the matches of the regular expression in the whole buffer, up
+// to maxAnchorMatches of them. It is only used for patterns that name the start of
+// the text; see findFrom for why that has to be the whole text.
 func (m *matcher) matches(text string) [][]int {
 	if m.literal || m.re == nil {
 		return nil
 	}
-	return m.re.FindAllStringSubmatchIndex(text, -1)
+	return m.re.FindAllStringSubmatchIndex(text, maxAnchorMatches)
 }
 
 // atMatch returns the submatch indices of the regex match beginning exactly at
 // byte offset off.
 func (m *matcher) atMatch(text string, off int) ([]int, bool) {
-	for _, loc := range m.matches(text) {
-		if loc[0] > off {
-			break // matches are ordered, so it can only get further away
-		}
-		if loc[0] == off {
-			return loc, true
-		}
+	if off < 0 || off > len(text) {
+		return nil, false
 	}
-	return nil, false
+	loc := m.findFrom(text, off)
+	if loc == nil || loc[0] != off {
+		return nil, false
+	}
+	return loc, true
 }
 
 // next returns the first match beginning at or after byte offset from.
@@ -86,12 +102,44 @@ func (m *matcher) next(text string, from int) (start, length int, ok bool) {
 	if from < 0 {
 		from = 0
 	}
-	for _, loc := range m.matches(text) {
-		if loc[0] >= from {
-			return loc[0], loc[1] - loc[0], true
-		}
+	if loc := m.findFrom(text, from); loc != nil {
+		return loc[0], loc[1] - loc[0], true
 	}
 	return 0, 0, false
+}
+
+// findFrom returns the leftmost match at or after from, or nil.
+//
+// It asks the engine for one match instead of all of them: a search for a common
+// word in a large file has millions of matches, and listing their offsets costs
+// more memory than the file itself. A pattern anchored with ^ to the start of the
+// text is the exception, since it has to be judged against the whole text and so
+// is matched there.
+func (m *matcher) findFrom(text string, from int) []int {
+	if from > len(text) {
+		return nil
+	}
+	if m.anchored {
+		for _, loc := range m.matches(text) {
+			if loc[0] >= from {
+				return loc
+			}
+		}
+		return nil
+	}
+	if from == 0 {
+		return m.re.FindStringSubmatchIndex(text)
+	}
+	loc := m.re.FindStringSubmatchIndex(text[from:])
+	if loc == nil {
+		return nil
+	}
+	for i := range loc { // indexes are relative to the slice
+		if loc[i] >= 0 {
+			loc[i] += from
+		}
+	}
+	return loc
 }
 
 // at reports whether a match begins exactly at byte offset off, returning its
@@ -132,11 +180,22 @@ func (m *matcher) replaceAll(text, repl string) (string, int) {
 		return text, 0
 	}
 	if !m.literal {
-		matches := m.re.FindAllStringIndex(text, -1)
-		if len(matches) == 0 {
+		// Counting through the callback keeps this to one pass over the text: the
+		// engine reports each replacement as it makes it, so no list of every match
+		// has to exist at once.
+		count := 0
+		expand := strings.ContainsRune(repl, '$')
+		out := m.re.ReplaceAllStringFunc(text, func(match string) string {
+			count++
+			if !expand {
+				return repl
+			}
+			return string(m.re.ExpandString(nil, repl, match, m.re.FindStringSubmatchIndex(match)))
+		})
+		if count == 0 {
 			return text, 0
 		}
-		return m.re.ReplaceAllString(text, repl), len(matches)
+		return out, count
 	}
 
 	var b strings.Builder
@@ -199,18 +258,17 @@ func (e *Editor) FindNext() {
 	}
 	e.recordFind(query)
 
-	text := e.searchText()
-	start := e.caretOffset(text)
+	start := e.caretOffset()
 
 	// If the cursor already sits on a match, start after it so "next" advances.
 	from := start
-	if n, ok := m.at(text, start); ok {
+	if n, ok := e.matchAt(m, start); ok {
 		from = start + n
 	}
 
-	idx, _, found := m.next(text, from)
+	idx, _, found := e.nextMatch(m, from)
 	if !found && from > 0 {
-		idx, _, found = m.next(text, 0) // wrap
+		idx, _, found = e.nextMatch(m, 0) // wrap
 	}
 	if !found {
 		e.setStatus("no matches for " + strconv.Quote(query))
@@ -235,17 +293,17 @@ func (e *Editor) ReplaceCurrent() {
 	}
 	e.recordFind(query)
 
-	text := e.searchText()
-	start := e.caretOffset(text)
-	n, ok := m.at(text, start)
+	start := e.caretOffset()
+	n, ok := e.matchAt(m, start)
 	if !ok {
 		e.FindNext()
 		return
 	}
 
-	repl := m.expand(text, start, e.replEntry.Text)
+	got := e.textRange(start, start+n)
+	repl := m.expand(got, 0, e.replEntry.Text)
 	if e.code != nil {
-		e.code.edit(start, text[start:start+n], repl, false)
+		e.code.edit(start, got, repl, false)
 	}
 	e.setStatus("replaced 1 occurrence")
 }
@@ -264,7 +322,8 @@ func (e *Editor) ReplaceAll() {
 	e.recordFind(query)
 
 	text := e.searchText()
-	at := e.caretOffset(text)
+	defer e.releaseSearchText(text)
+	at := e.caretOffset()
 	out, count := m.replaceAll(text, e.replEntry.Text)
 	if count == 0 {
 		e.setStatus("no matches for " + strconv.Quote(query))
@@ -366,10 +425,154 @@ func (e *Editor) gotoLine(n int) {
 }
 
 // searchText is the text find and replace work on.
-func (e *Editor) searchText() string { return e.text() }
+// nextMatch returns the first match at or after from.
+//
+// A literal search reads the document's pages rather than asking for the text of
+// the buffer: a large file is held as pages, or as a view of a mapping, and never as
+// one string, so building that string just to look through it would cost the size of
+// the file in memory for every search.
+func (e *Editor) nextMatch(m *matcher, from int) (start, length int, ok bool) {
+	if m.literal && e.doc != nil {
+		if at := findInDoc(e.doc, m.query, from, m.matchCase); at >= 0 {
+			return at, len(m.query), true
+		}
+		return 0, 0, false
+	}
+	if !m.literal && !m.anchored && e.doc != nil && e.doc.size > 2*regexWindow {
+		return e.regexNext(m, from)
+	}
+	text := e.searchText()
+	defer e.releaseSearchText(text)
+	return m.next(text, from)
+}
 
-// caretOffset is the caret's byte offset into text.
-func (e *Editor) caretOffset(string) int {
+// textRange is text[from:to] of the document, empty when there is no document.
+func (e *Editor) textRange(from, to int) string {
+	if e.doc == nil {
+		return ""
+	}
+	return e.doc.TextRange(from, to)
+}
+
+// matchAt returns the length of the match beginning exactly at off, if there is one.
+func (e *Editor) matchAt(m *matcher, off int) (int, bool) {
+	start, n, ok := e.nextMatch(m, off)
+	if !ok || start != off {
+		return 0, false
+	}
+	return n, true
+}
+
+// releaseSearchText hands back the memory a search needed when it could not run over
+// the mapping directly. The regexp engine takes a string, so a file that was read
+// into pages has to be joined for it; a search that copied hundreds of megabytes
+// should not leave them counted against the heap afterwards.
+func (e *Editor) releaseSearchText(text string) {
+	if e.doc == nil {
+		return
+	}
+	if _, ok := e.doc.Whole(); ok {
+		return
+	}
+	freeMemory(len(text))
+}
+
+// regexWindow is how much of a large document is handed to the regexp engine at a
+// time, and regexOverlap how far past the window a match may run. The engine keeps
+// scratch space proportional to the text it is given — tens of megabytes for a file
+// of a few hundred — so a big file is searched window by window instead.
+const (
+	regexWindow  = 1 << 20
+	regexOverlap = 256 << 10
+)
+
+// regexNext returns the first match at or after from in a large document, without
+// giving the engine the whole of it. A match longer than regexOverlap that runs
+// across a window boundary is not found.
+func (e *Editor) regexNext(m *matcher, from int) (start, length int, ok bool) {
+	d := e.doc
+	for off := from; off < d.size; {
+		end := off + regexWindow
+		if end > d.size {
+			end = d.size
+		}
+		stop := end + regexOverlap
+		if stop > d.size {
+			stop = d.size
+		}
+		// Windows tile the document and only overhang past their end, so the
+		// leftmost match in the first window that has one is the leftmost match.
+		window, ok := d.ViewRange(off, stop)
+		if !ok {
+			window = d.TextRange(off, stop)
+		}
+		if loc := m.re.FindStringSubmatchIndex(window); loc != nil {
+			return off + loc[0], loc[1] - loc[0], true
+		}
+		off = end
+	}
+	return 0, 0, false
+}
+
+// findInDoc returns the offset of the first occurrence of q at or after from, or -1.
+//
+// Pages are searched one at a time, so nothing the size of the document is allocated;
+// a query that spans a page boundary is found by looking at the few bytes either side
+// of it afterwards.
+func findInDoc(d *Document, q string, from int, matchCase bool) int {
+	if q == "" || d == nil || from < 0 || from > d.size {
+		return -1
+	}
+	overlap := len(q) - 1
+	for i := d.pageOf(from); i < len(d.pages); i++ {
+		base := d.starts[i]
+		beg := 0
+		if from > base {
+			beg = from - base
+		}
+		page := d.pages[i]
+		if at := findFrom(page, q, beg, matchCase); at >= 0 {
+			return base + at
+		}
+		if overlap <= 0 || i+1 >= len(d.pages) {
+			continue
+		}
+		// The tail of this page and the head of the next, which is where a query
+		// straddling the boundary lives.
+		tail := page
+		if len(tail) > overlap {
+			tail = tail[len(tail)-overlap:]
+		}
+		head := d.pages[i+1]
+		if len(head) > overlap {
+			head = head[:overlap]
+		}
+		carryAt := base + len(page) - len(tail)
+		skip := 0
+		if carryAt < from {
+			skip = from - carryAt // the carry starts before from, so forget that part
+		}
+		if at := findFrom(tail+head, q, skip, matchCase); at >= 0 {
+			return carryAt + at
+		}
+	}
+	return -1
+}
+
+// searchText is the text a search runs over. A large file that is mapped hands
+// back a view of the mapping rather than a copy, so looking for something in it
+// does not cost its size in memory.
+func (e *Editor) searchText() string {
+	if e.doc != nil {
+		if whole, ok := e.doc.Whole(); ok {
+			return whole
+		}
+	}
+	return e.text()
+}
+
+// caretOffset is the caret's byte offset into the document.
+func (e *Editor) caretOffset() int {
 	if e.code == nil {
 		return 0
 	}
